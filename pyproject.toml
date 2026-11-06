@@ -10,6 +10,18 @@ readme = "README.md"
 license = "0BSD"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+keywords = [
+    "cli",
+    "code-quality",
+    "mutation-testing",
+    "crap-metric",
+    "code-duplication",
+    "test-coverage",
+    "static-analysis",
+    "quality-gate",
+    "ub-mode",
+    "python",
+]
 dependencies = [
     "tree-sitter==0.26.0",
     "tree-sitter-language-pack==1.22.1",
