@@ -91,6 +91,12 @@ jobs:
           mkdir "$RUNNER_TEMP/ub-smoke"
           tar -xzf "$archive" -C "$RUNNER_TEMP/ub-smoke" ub
           sh scripts/smoke-release.sh "$RUNNER_TEMP/ub-smoke/ub"
+          release_base="$RUNNER_TEMP/ub-releases"
+          mkdir -p "$release_base/latest/download"
+          cp "$archive" "$release_base/latest/download/"
+          (cd "$release_base/latest/download" && shasum -a 256 *.tar.gz > checksums.txt)
+          UB_DOWNLOAD_BASE="$release_base" "$RUNNER_TEMP/ub-smoke/ub" update
+          test "$("$RUNNER_TEMP/ub-smoke/ub" --version)" = "ub $RELEASE_VERSION"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ub-${{ matrix.os }}-${{ matrix.arch }}

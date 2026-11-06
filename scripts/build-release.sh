@@ -28,6 +28,7 @@ version=$("$python" -c 'from importlib.metadata import version; print(version("u
 mkdir -p "$stage/bin"
 cp LICENSE "$stage/bin/LICENSE"
 "$python" scripts/collect_notices.py "$stage/bin"
+cp src/ub_cli/skills/ub-mode/LICENSE "$stage/bin/licenses/ub-mode-LICENSE"
 
 # Download the pinned language pack's parsers into an isolated cache.
 "$python" - "$stage/grammar-cache" <<'PY'
@@ -48,7 +49,7 @@ PY
     --distpath "$stage/bin" --workpath "$stage/build" --specpath "$stage" \
     --collect-all crapper --collect-all dryer --collect-all mutator \
     --collect-all tree_sitter --collect-all tree_sitter_language_pack \
-    --copy-metadata ub-cli \
+    --collect-data ub_cli --copy-metadata ub-cli \
     --add-data "$stage/grammar-cache:grammar-cache" \
     --add-data "$stage/bin/LICENSE:." \
     --add-data "$stage/bin/THIRD_PARTY_NOTICES.md:." \

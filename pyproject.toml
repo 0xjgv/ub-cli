@@ -23,3 +23,6 @@ ub = "ub_cli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ub_cli = ["install.sh", "skills/ub-mode/SKILL.md", "skills/ub-mode/LICENSE"]

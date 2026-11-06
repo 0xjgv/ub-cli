@@ -9,6 +9,8 @@ HELP = """Usage: ub COMMAND [options]
   dry      Find structurally similar code
   mutate   Test whether mutations are caught
   check    Enforce all three ub-mode gates
+  skill    Install a bundled agent skill
+  update   Update the standalone executable
 
 Run ub --version to print the installed version.
 Run ub COMMAND --help for command-specific options.
@@ -31,6 +33,10 @@ def run(argv: list[str]) -> int:
         from dryer.cli import run as execute
     elif command == "mutate":
         from mutator.cli import run as execute
+    elif command == "update":
+        from ub_cli.update import run as execute
+    elif command == "skill":
+        from ub_cli.skill import run as execute
     elif command == "check":
         from ub_cli.check import run as execute
     else:

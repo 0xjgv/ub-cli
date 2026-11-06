@@ -23,6 +23,11 @@ curl -fsSL https://raw.githubusercontent.com/0xjgv/ub-cli/main/install.sh | UB_V
 ub --version
 ```
 
+After a native install, run `ub update` to replace the running executable
+in its install directory with the latest release. It uses the same checksum
+verification as the initial install. For Python installations, upgrade with
+the package manager you used to install `ub-cli`.
+
 For a manual install, download your platform archive and `checksums.txt` from
 [GitHub Releases](https://github.com/0xjgv/ub-cli/releases), compare the archive's
 `shasum -a 256` (or `sha256sum`) with the entry for its filename, and extract
@@ -30,6 +35,23 @@ For a manual install, download your platform archive and `checksums.txt` from
 
 To install from a source checkout, run `make install` with Git and uv available,
 or use `python -m pip install .` in a Python 3.11+ virtual environment.
+
+## Install the agent skill
+
+```sh
+ub skill install ub-mode --target codex
+ub skill install ub-mode --target claude
+```
+
+Codex installs to `~/.agents/skills/ub-mode/` and Claude to
+`~/.claude/skills/ub-mode/`. Run the command for each agent you use.
+An identical install succeeds without rewriting files. Add `--force` to
+replace a locally edited skill or license. Invoke `$ub-mode` in Codex or
+`/ub-mode` in Claude.
+
+The installer works offline. It includes the upstream MIT license and a copy of
+the skill adapted to call the three `ub` subcommands.
+[Upstream revision](https://github.com/unclebob/ub-mode/tree/3da62bf3fcfd2034de41f30d920d2739e566171f)
 
 ## Usage
 
