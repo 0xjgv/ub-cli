@@ -1,6 +1,7 @@
 """Dispatch upstream commands without interpreting their flags or exit codes."""
 
 import sys
+from importlib.metadata import version
 
 HELP = """Usage: ub COMMAND [options]
 
@@ -9,6 +10,7 @@ HELP = """Usage: ub COMMAND [options]
   mutate   Test whether mutations are caught
   check    Enforce all three ub-mode gates
 
+Run ub --version to print the installed version.
 Run ub COMMAND --help for command-specific options.
 """
 
@@ -16,6 +18,10 @@ Run ub COMMAND --help for command-specific options.
 def run(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
         print(HELP, end="")
+        return 0
+
+    if argv == ["--version"]:
+        print(f"ub {version('ub-cli')}")
         return 0
 
     command, *args = argv

@@ -4,10 +4,36 @@ Run the three [ub-mode](https://github.com/unclebob/ub-mode) quality tools from 
 
 ## Install
 
-From this directory, run `uv tool install . --python 3.11`, or run
-`python -m pip install .` in a Python 3.11+ virtual environment. Installation
-requires Git and downloads the upstream engines at the revisions in
-`pyproject.toml`. Run the installed command in the project you want to analyze.
+The native release targets macOS and Linux on arm64 and amd64. It packages the
+`ub` runtime. Your project still needs its own test runner and coverage tools.
+
+After a public release is available, install or update with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/0xjgv/ub-cli/main/install.sh | sh
+```
+
+The installer selects the archive for your machine, verifies its SHA-256 against
+the release manifest, and installs `ub` in `~/.local/bin`. Put that directory
+on your `PATH`. Set `UB_VERSION` to pin a release or `UB_INSTALL_DIR` to
+choose the destination:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/0xjgv/ub-cli/main/install.sh | UB_VERSION=v0.1.0 UB_INSTALL_DIR="$HOME/bin" sh
+ub --version
+```
+
+For a manual install, download your platform archive and `checksums.txt` from
+[GitHub Releases](https://github.com/0xjgv/ub-cli/releases), compare the archive's
+`shasum -a 256` (or `sha256sum`) with the entry for its filename, and extract
+`ub` into a directory on your `PATH`. To uninstall, remove that executable.
+
+To install from a source checkout, run `make install` with Git and uv available,
+or use `python -m pip install .` in a Python 3.11+ virtual environment.
+
+## Usage
+
+Run these commands in the project you want to analyze.
 
 ```sh
 ub crap --changed
@@ -45,7 +71,22 @@ intentional. The test command runs first on the original code
 and then against mutations. Reference the source relative to the working
 directory so the tests exercise the mutated copy.
 
-## Tests
+## Development and releases
 
-After installing the project in a virtual environment, run
-`python -m unittest discover -s tests -v` from this directory.
+Run `make test` for the test suite, `make check-upstreams` to compare engine
+pins, and `make build-native` to produce the archive for the current machine
+under `dist/`. `make build` builds the Python wheel.
+
+Before tagging, run the Release workflow manually and inspect its build
+artifacts. Each platform must pass the packaged CLI smoke test. To prepare a
+GitHub release, set the version in `pyproject.toml`, merge the tested revision
+to `main`, and push its matching tag (for example, `v0.1.0`). Inspect the
+four platform archives, installer, and SHA-256 manifest in the draft before
+publishing it. Public installation requires a public repository and a published
+release.
+
+## License
+
+The ub-cli code uses the [BSD Zero Clause License](LICENSE), matching Crapper,
+Dryer, and Mutator. Bundled third-party components retain their own licenses.
+Run `ub --licenses` on a native installation to print the bundled notices.
