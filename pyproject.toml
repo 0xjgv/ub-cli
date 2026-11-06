@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ub-cli"
+version = "0.1.0"
+description = "Run the three ub-mode quality checks from one CLI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter==0.26.0",
+    "tree-sitter-language-pack==1.22.1",
+    "crapper @ git+https://github.com/unclebob/crapper.git@6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d",
+    "dryer @ git+https://github.com/unclebob/dryer.git@66ff6d21a42c04afcad89c78a80066176d1294b0",
+    "mutator @ git+https://github.com/unclebob/mutator.git@a5a0cb803b66e0cdb8bf471b3b08af701d424a41",
+]
+
+[project.scripts]
+ub = "ub_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
