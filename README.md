@@ -39,12 +39,12 @@ or use `python -m pip install .` in a Python 3.11+ virtual environment.
 ## Install the agent skill
 
 ```sh
-ub skill install ub-mode --target codex
-ub skill install ub-mode --target claude
+ub skill install
 ```
 
 Codex installs to `~/.agents/skills/ub-mode/` and Claude to
-`~/.claude/skills/ub-mode/`. Run the command for each agent you use.
+`~/.claude/skills/ub-mode/`. Add `--target codex` or `--target claude` to
+install for one agent.
 An identical install succeeds without rewriting files. Add `--force` to
 replace a locally edited skill or license. Invoke `$ub-mode` in Codex or
 `/ub-mode` in Claude.

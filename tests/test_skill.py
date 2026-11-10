@@ -42,6 +42,20 @@ class SkillInstallTests(unittest.TestCase):
         self.assertIn("ub mutate", skill.read_text())
         self.assertEqual((folder / "notes.md").read_text(), "keep")
 
-    def test_missing_target_writes_nothing(self):
-        self.assertEqual(run(["skill", "install", "ub-mode"]), 2)
-        self.assertEqual(list(self.home.iterdir()), [])
+    def test_no_arguments_installs_every_target(self):
+        self.assertEqual(run(["skill", "install"]), 0)
+        for agent in (".agents", ".claude"):
+            skill = self.home / agent / "skills" / "ub-mode" / "SKILL.md"
+            self.assertIn("name: ub-mode", skill.read_text())
+            self.assertIn("MIT License", skill.with_name("LICENSE").read_text())
+
+    def test_edit_in_one_target_blocks_every_target(self):
+        skill = self.home / ".claude/skills/ub-mode/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("personal edits")
+        self.assertEqual(run(["skill", "install"]), 1)
+        self.assertEqual(skill.read_text(), "personal edits")
+        self.assertFalse((self.home / ".agents").exists())
+        self.assertEqual(run(["skill", "install", "--force"]), 0)
+        self.assertIn("ub mutate", skill.read_text())
+        self.assertTrue((self.home / ".agents/skills/ub-mode/SKILL.md").is_file())

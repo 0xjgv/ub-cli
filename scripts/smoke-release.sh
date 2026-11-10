@@ -7,8 +7,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 unset PYTHONPATH
-HOME="$work/home" "$ub" skill install ub-mode --target codex
-HOME="$work/home" "$ub" skill install ub-mode --target claude
+HOME="$work/home" "$ub" skill install
 cmp "$work/home/.agents/skills/ub-mode/SKILL.md" "$work/home/.claude/skills/ub-mode/SKILL.md"
 grep -F 'MIT License' "$work/home/.agents/skills/ub-mode/LICENSE" >/dev/null
 cat > arithmetic.py <<'PY'
