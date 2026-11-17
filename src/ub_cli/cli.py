@@ -41,7 +41,9 @@ def run(argv: list[str]) -> int:
     command, *args = argv
     if command in ENGINES:
         engine = import_module(f"{ENGINES[command]}.cli")
-        # Upstream help names the engine; name the command the user typed instead.
+        # shortcut: rewrites upstream's module HELP, which hardcodes the engine name
+        # and ignores argv[0]; tests catch a renamed or reformatted HELP. Drop this
+        # once the engines accept a program name.
         engine.HELP = engine.HELP.replace(f"Usage: {ENGINES[command]} ", f"Usage: ub {command} ", 1)
         execute = engine.run
     elif command == "update":

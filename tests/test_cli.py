@@ -39,11 +39,11 @@ class UpstreamParityTests(unittest.TestCase):
     def test_subcommand_help_names_the_ub_command(self):
         for command, engine in (("crap", "crapper"), ("dry", "dryer"), ("mutate", "mutator")):
             with self.subTest(command=command):
-                status, output, error = invoke(run, [command, "--help"])
                 upstream = invoke(importlib.import_module(f"{engine}.cli").run, ["--help"])[1]
+                status, output, error = invoke(run, [command, "--help"])
                 self.assertEqual((0, ""), (status, error))
-                self.assertTrue(output.startswith(f"Usage: ub {command} [options]"), output)
-                self.assertEqual(upstream.splitlines()[1:], output.splitlines()[1:])
+                self.assertTrue(upstream.startswith(f"Usage: {engine} [options]"), upstream)
+                self.assertEqual(f"Usage: ub {command}" + upstream.removeprefix(f"Usage: {engine}"), output)
 
     def test_top_level_help_names_all_commands(self):
         status, output, _ = invoke(run, ["--help"])
@@ -73,10 +73,10 @@ class UpstreamParityTests(unittest.TestCase):
         with (
             patch("sys.argv", ["ub", "--version"]),
             contextlib.redirect_stdout(output),
-            self.assertRaises(SystemExit) as exit,
+            self.assertRaises(SystemExit) as raised,
         ):
             main()
-        self.assertEqual(0, exit.exception.code)
+        self.assertEqual(0, raised.exception.code)
         self.assertTrue(output.getvalue().startswith("ub "))
 
 
