@@ -139,7 +139,8 @@ jobs:
   draft:
     needs: [version, bundle]
     if: github.event_name == 'push'
-    runs-on: ubuntu-22.04
+    # Ubuntu 22.04 has no minisign package; 24.04 does.
+    runs-on: ubuntu-24.04
     # Holds MINISIGN_SECRET_KEY; no other job can read it.
     environment: release
     permissions:
@@ -190,10 +191,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-22.04
+          - runner: ubuntu-24.04
             os: linux
             arch: amd64
-          - runner: ubuntu-22.04-arm
+          - runner: ubuntu-24.04-arm
             os: linux
             arch: arm64
           - runner: macos-15-intel
