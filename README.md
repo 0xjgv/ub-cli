@@ -7,29 +7,40 @@ Run the three [ub-mode](https://github.com/unclebob/ub-mode) quality tools from 
 The native release targets macOS and Linux on arm64 and amd64. It packages the
 `ub` runtime. Your project still needs its own test runner and coverage tools.
 
-After a public release is available, install or update with:
+Install or update with the latest release's installer:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0xjgv/ub-cli/main/install.sh | sh
+curl -fsSL https://github.com/0xjgv/ub-cli/releases/latest/download/install.sh | sh
 ```
 
 The installer selects the archive for your machine, verifies its SHA-256 against
-the release manifest, and installs `ub` in `~/.local/bin`. Put that directory
-on your `PATH`. Set `UB_VERSION` to pin a release or `UB_INSTALL_DIR` to
-choose the destination:
+the release manifest, and installs `ub` in `~/.local/bin`. When
+[minisign](https://jedisct1.github.io/minisign/) is installed, it first verifies
+the manifest's signature (`checksums.txt.minisig`) against this public key:
+
+```text
+RWTLb536jI8+3VG6zclr5kbCi69IAiL7HkhEefxbOJSlJRl2v9muK6ow
+```
+
+Put `~/.local/bin` on your `PATH`. Set `UB_VERSION` to pin a release or
+`UB_INSTALL_DIR` to choose the destination:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/0xjgv/ub-cli/main/install.sh | UB_VERSION=v0.1.0 UB_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://github.com/0xjgv/ub-cli/releases/latest/download/install.sh | UB_VERSION=vX.Y.Z UB_INSTALL_DIR="$HOME/bin" sh
 ub --version
 ```
 
 After a native install, run `ub update` to replace the running executable
-in its install directory with the latest release. It uses the same checksum
-verification as the initial install. For Python installations, upgrade with
-the package manager you used to install `ub-cli`.
+in its install directory with the latest release, or `ub update vX.Y.Z` for a
+specific one. It runs the installer bundled in the executable and always
+verifies the manifest's signature with the key embedded there, so v0.2.0 and
+earlier releases, which are unsigned, cannot be installed this way. It exits
+without downloading when that release is already installed. For Python
+installations, upgrade with the package manager you used to install `ub-cli`.
 
-For a manual install, download your platform archive and `checksums.txt` from
-[GitHub Releases](https://github.com/0xjgv/ub-cli/releases), compare the archive's
+For a manual install, download your platform archive, `checksums.txt`, and
+`checksums.txt.minisig` from [GitHub Releases](https://github.com/0xjgv/ub-cli/releases).
+Run `minisign -V -P <key above> -m checksums.txt`, compare the archive's
 `shasum -a 256` (or `sha256sum`) with the entry for its filename, and extract
 `ub` into a directory on your `PATH`. To uninstall, remove that executable.
 
@@ -100,13 +111,22 @@ Run `make test` for the test suite, `make check-upstreams` to compare engine
 pins, and `make build-native` to produce the archive for the current machine
 under `dist/`. `make build` builds the Python wheel.
 
-Before tagging, run the Release workflow manually and inspect its build
-artifacts. Each platform must pass the packaged CLI smoke test. To prepare a
-GitHub release, set the version in `pyproject.toml`, merge the tested revision
-to `main`, and push its matching tag (for example, `v0.1.0`). Inspect the
-four platform archives, installer, and SHA-256 manifest in the draft before
-publishing it. Public installation requires a public repository and a published
-release.
+`make release [BUMP=patch|minor|major]` bumps the version in `pyproject.toml`
+on a clean, up-to-date `main`, tags it, and pushes both. Rerunning it after an
+interruption re-pushes the same tag. The Release workflow runs only when the
+repository owner pushed or re-ran it:
+
+1. Test and build each platform archive, and smoke-test the packaged CLI.
+2. Assemble the archives, `install.sh`, and `checksums.txt`.
+3. In the `release` environment, sign `checksums.txt` with the
+   `MINISIGN_SECRET_KEY` secret, check the signature against the key in
+   `install.sh`, and upload everything to a draft release.
+4. On every platform, install from the draft with its `install.sh`, update
+   with the new `ub`, and update from the previous published release.
+5. Publish the draft.
+
+A published release is never modified. Running the workflow manually builds
+and tests the archives without creating a release.
 
 ## License
 
