@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import fnmatch
 import shlex
 import sys
 from importlib import import_module
@@ -198,20 +199,32 @@ def _relative(write_metrics):
     return written
 
 
-def _tests_dir(command, directory: Path):
-    """Point a default `unittest discover` at tests/ or test/ when the top level has no tests."""
+def _discoverable(directory: Path) -> bool:
+    """Whether `unittest discover -s .` finds a test*.py: at the top or inside importable packages."""
 
-    # shortcut: assumes `-s .` finds nothing without top-level test*.py or an
-    # importable tests package; ask unittest itself if a layout proves this wrong.
+    # shortcut: walks files like unittest does but ignores load_tests hooks;
+    # ask unittest itself if a project relies on them.
+    folders = [directory]
+    while folders:
+        for path in folders.pop().iterdir():
+            if path.is_file() and fnmatch.fnmatch(path.name, "test*.py"):
+                return True
+            if path.is_dir() and (path / "__init__.py").is_file():
+                folders.append(path)
+    return False
+
+
+def _tests_dir(command, directory: Path):
+    """Point a default `unittest discover` at tests/ or test/ when `-s .` finds no tests."""
+
     if not isinstance(command, list):
         return command
     base = command[:-2] if command[-2:] == ["-s", "."] else command
-    if base[-2:] != ["unittest", "discover"] or any(directory.glob("test*.py")):
+    if base[-2:] != ["unittest", "discover"] or _discoverable(directory):
         return command
     for name in ("tests", "test"):
         if (directory / name).is_dir():
-            # An importable package is one `-s .` already finds.
-            return command if (directory / name / "__init__.py").is_file() else base + ["-s", name]
+            return base + ["-s", name]
     return command
 
 

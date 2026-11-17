@@ -260,8 +260,15 @@ class PythonTestsTests(unittest.TestCase):
         (self.root / "tests").mkdir()
         (self.root / "test").mkdir()
         (self.root / "tests" / "__init__.py").write_text("")
+        (self.root / "tests" / "test_a.py").write_text("")
         self.assertEqual(command, self.rewrite(command))
         (self.root / "tests" / "__init__.py").unlink()
+        (self.root / "pkg" / "inner").mkdir(parents=True)
+        for name in ("pkg/__init__.py", "pkg/inner/__init__.py", "pkg/inner/test_deep.py"):
+            (self.root / name).write_text("")
+        self.assertEqual(command, self.rewrite(command))
+        (self.root / "pkg" / "inner" / "__init__.py").unlink()
+        self.assertEqual(command + ["-s", "tests"], self.rewrite(command))
         (self.root / "test_top.py").write_text("")
         self.assertEqual(command, self.rewrite(command))
 

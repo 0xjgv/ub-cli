@@ -81,9 +81,9 @@ names `ub COMMAND` instead of the engine. Coverage and
 mutation runs use the target project's toolchain. Upstream coverage runners can
 install missing coverage tools. To read coverage already collected by your CI,
 use `ub check --use-existing-coverage` or `ub crap --use-existing-coverage`.
-When the default Python run uses `unittest discover` and the project's top level
-holds no tests, ub points it at a `tests/` or `test/` directory that has no
-`__init__.py`, which plain discovery would skip.
+When the default Python run uses `unittest discover` and discovery from the
+project root would find no `test*.py`, ub points it at a `tests/` or `test/`
+directory, which plain discovery skips when it has no `__init__.py`.
 
 By default each command prints a summary line and the items that need work:
 `ub crap` lists functions with CRAP ≥ 10, or above `--threshold` (complexity
