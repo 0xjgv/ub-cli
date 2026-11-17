@@ -30,7 +30,7 @@ cp LICENSE "$stage/bin/LICENSE"
 "$python" scripts/collect_notices.py "$stage/bin"
 cp src/ub_cli/skills/ub-mode/LICENSE "$stage/bin/licenses/ub-mode-LICENSE"
 for engine in crapper dryer mutator; do
-    cp "src/ub_cli/_vendor/$engine/LICENSE" "$stage/bin/licenses/$engine-LICENSE"
+    cp "src/ub_cli/vendor/$engine/LICENSE" "$stage/bin/licenses/$engine-LICENSE"
 done
 
 # Download the pinned language pack's parsers into an isolated cache.

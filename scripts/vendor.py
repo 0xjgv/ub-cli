@@ -1,10 +1,12 @@
-"""Copy the upstream engines into src/ub_cli/_vendor at pinned commits.
+"""Copy the upstream engines into src/ub_cli/vendor at pinned commits.
 
     python scripts/vendor.py NAME COMMIT   vendor one engine at COMMIT and record the pin
     python scripts/vendor.py               re-vendor every pin in VENDORED (reproduces the tree)
 
-Absolute imports of the engines become ub_cli._vendor imports, so the wheel never
+Absolute imports of the engines become ub_cli.vendor imports, so the wheel never
 installs top-level packages that collide with unrelated PyPI projects of the same name.
+The directory is named `vendor` because the engines skip directories of that name,
+so `ub crap`, `ub dry`, `ub mutate`, and `ub check` never analyze the engines themselves.
 Never edit vendored code by hand; change the pin and rerun this script.
 """
 
@@ -16,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "src" / "ub_cli" / "_vendor"
+VENDOR = ROOT / "src" / "ub_cli" / "vendor"
 PINS = VENDOR / "VENDORED"
 ENGINES = ("crapper", "dryer", "mutator")
 NAMES = "|".join(ENGINES)
@@ -42,10 +44,10 @@ def write_pins(pins: dict[str, tuple[str, str]]) -> None:
 
 
 def rewrite(source: str, path: Path) -> str:
-    source = FROM_IMPORT.sub(lambda m: f"{m[1]}from ub_cli._vendor.{m[2]}{m[3] or ''} import ", source)
-    source = PLAIN_IMPORT.sub(r"\1from ub_cli._vendor import \2", source)
+    source = FROM_IMPORT.sub(lambda m: f"{m[1]}from ub_cli.vendor.{m[2]}{m[3] or ''} import ", source)
+    source = PLAIN_IMPORT.sub(r"\1from ub_cli.vendor import \2", source)
     # `import crapper.coverage` loads the submodule and binds `crapper`; keep both effects.
-    source = SUBMODULE_IMPORT.sub(r"\1import ub_cli._vendor.\2\3\n\1from ub_cli._vendor import \2", source)
+    source = SUBMODULE_IMPORT.sub(r"\1import ub_cli.vendor.\2\3\n\1from ub_cli.vendor import \2", source)
     if LEFTOVER.search(source):
         raise SystemExit(f"{path}: unsupported engine import form; extend scripts/vendor.py")
     return source
