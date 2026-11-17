@@ -113,8 +113,8 @@ When the test command is a Python `python -m unittest discover` with no shell
 operators and no `-k`, each Python mutant first runs only the test modules that
 import its module, directly or through other project modules, stopping at the
 first failure. A failure kills the mutant. A pass reruns the full test command,
-so the verdict matches a full-suite run. The focused tests must pass on the
-original code first, or every mutant of that file runs the full command.
+so the verdict matches a full-suite run. Each group of focused tests must pass
+on the original code first, or it is skipped.
 
 By default it prints one summary line per gate, the items that failed (one
 line per CRAP function, duplicate pair, and surviving or uncovered mutant, the

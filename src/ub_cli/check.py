@@ -380,6 +380,26 @@ def affected_tests(graph, module: str) -> list[list[str]]:
     return [tier for tier in tiers if tier]
 
 
+def _words(command) -> list[str] | None:
+    """A command's words as a POSIX shell splits them, with `#` kept as a word."""
+
+    if isinstance(command, list):
+        return command
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _blocks_focus(word: str) -> bool:
+    """A -k flag, a comment, or a shell operator."""
+
+    short_k = word.startswith("-") and not word.startswith("--") and "k" in word
+    return short_k or word.startswith("#") or not word.strip("();<>|&")
+
+
 def focused_command(command, tests: list[str]):
     """`command` narrowed to `tests` and stopped at the first failure, or None.
 
@@ -388,21 +408,11 @@ def focused_command(command, tests: list[str]):
     the user's selection.
     """
 
-    if isinstance(command, list):
-        words = command
-    else:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.commenters = ""
-        try:
-            words = list(lexer)
-        except ValueError:
-            return None
-    if not tests or ("unittest", "discover") not in zip(words, words[1:]):
+    words = _words(command)
+    if not tests or words is None or ("unittest", "discover") not in zip(words, words[1:]):
         return None
-    for word in words:
-        short_k = word.startswith("-") and not word.startswith("--") and "k" in word
-        if short_k or word.startswith("#") or not word.strip("();<>|&"):
-            return None
+    if any(_blocks_focus(word) for word in words):
+        return None
     extra = ["-f"] + [word for test in tests for word in ("-k", f"*{test}.*")]
     return command + extra if isinstance(command, list) else f"{command} {shlex.join(extra)}"
 
