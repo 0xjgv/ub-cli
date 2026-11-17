@@ -81,18 +81,25 @@ names `ub COMMAND` instead of the engine. Coverage and
 mutation runs use the target project's toolchain. Upstream coverage runners can
 install missing coverage tools. To read coverage already collected by your CI,
 use `ub check --use-existing-coverage` or `ub crap --use-existing-coverage`.
+When the default Python run uses `unittest discover` and discovery from the
+project root would find no `test*.py`, ub points it at a `tests/` or `test/`
+directory, which plain discovery skips when it has no `__init__.py`.
 
 By default each command prints a summary line and the items that need work:
 `ub crap` lists functions with CRAP ≥ 10, or above `--threshold` (complexity
 ≥ 10 with `--no-coverage`), `ub dry` one line per duplicate pair, and
 `ub mutate` the surviving and uncovered mutants. `ub crap` and `ub dry` show
-the first 10 items; `ub mutate --scan` prints one line per file with sites.
+the first 10 items; `ub mutate --scan` prints one line per file with sites,
+saying `coverage unknown` when no report covers the file. A CRAP line reads
+`18.0 CRAP, 8 CC, 46% covered: pkg.module/function` and a mutant line
+`src/pkg/module.py:109 survived > -> >=`; `ub check` prints the same lines.
 Coverage output stays hidden unless a coverage command fails. Pass `--verbose`
 for the engine's full report, every mutant, and the coverage output.
 
 ub exits 2 with one cause line where the engine would report nothing useful:
 when a whole-project `ub crap` reads coverage in which no analyzed function
-ran a line, and when a path or filter argument matches no source file (except
+ran a line (the message names the custom or Python coverage command that ran),
+and when a path or filter argument matches no source file (except
 with `--changed`). A bare run on a project without source files still exits 0.
 
 ## Combined gate
@@ -102,8 +109,9 @@ generates coverage once, verifies the unmutated tests pass, and reruns every
 covered mutant so a previous kill cannot hide a weakened test. For faster
 differential mutation runs, use `ub mutate`.
 
-By default it prints one summary line per gate, the items that failed, and a
-verdict. The coverage command's output appears only when coverage fails or is
+By default it prints one summary line per gate, the items that failed (one
+line per CRAP function, duplicate pair, and surviving or uncovered mutant, the
+first 20 of each), and a verdict. The coverage command's output appears only when coverage fails or is
 incomplete. Pass `--verbose` for the full CRAP table, duplicate list, and
 mutant log, and to stream the coverage command's output.
 

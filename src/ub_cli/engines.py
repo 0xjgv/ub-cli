@@ -1,20 +1,24 @@
 """Run a vendored engine with ub's terse output and stricter exits.
 
 The engines stay untouched on disk. While one runs, ub swaps a few of its
-module-level names: the report formatters, the coverage runner, and the
-file selection. The engine still prints each report when it is ready, so a
-long mutation run streams per file. A renamed name fails loudly in the tests.
+module-level names: the report formatters, the coverage runner, the file
+selection, and the default Python test discovery. The engine still prints
+each report when it is ready, so a long mutation run streams per file. A
+renamed name fails loudly in the tests.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
+import fnmatch
+import shlex
 import sys
 from importlib import import_module
 from pathlib import Path
 
-from ub_cli.check import NO_EXECUTED_LINES, _quietly, unexecuted
+from ub_cli import check
+from ub_cli.check import _quietly, crap_line, mutant_line, no_executed_lines, unexecuted
 
 LIMIT = 10
 VERBOSE_HELP = {
@@ -52,7 +56,7 @@ def _unmatched(options, files: list[Path]) -> str | None:
         candidate = Path(argument) if Path(argument).is_absolute() else root / argument
         if candidate.exists():
             target = candidate.resolve()
-            hit = any(path == target or path.is_relative_to(target) for path in files)
+            hit = any(path.is_relative_to(target) for path in files)
         else:
             hit = any(argument in path.as_posix() for path in files)
         if not hit:
@@ -80,7 +84,7 @@ def _strict_analysis(analyze, verbose: bool, seen: dict):
         narrowed = options.positionals or options.changed
         if bundle is not None and not narrowed and unexecuted(entries):
             hint = "" if verbose else " Rerun with --verbose to see its output."
-            raise Stop(NO_EXECUTED_LINES + hint)
+            raise Stop(no_executed_lines(seen["ran"]) + hint)
         return entries
 
     return analyzed
@@ -117,11 +121,7 @@ def crap_report(entries, threshold: float | None = None) -> str:
             notable = [entry for entry in entries if entry.crap is not None and entry.crap > threshold]
             cutoff = f"> {threshold:g}"
         summary = f"CRAP: {len(notable)} of {len(entries)} functions {cutoff}"
-        lines = [
-            f"  {entry.crap:.1f} CRAP, {entry.complexity} CC, {entry.coverage:.0f}% covered: "
-            f"{entry.namespace}/{entry.name}"
-            for entry in notable
-        ]
+        lines = [f"  {crap_line(entry)}" for entry in notable]
     else:
         notable = [entry for entry in entries if entry.complexity >= 10]
         summary = (
@@ -143,12 +143,14 @@ def dry_report(candidates) -> str:
     return "\n".join([summary, *_shown(lines)]) + "\n"
 
 
-def _site_log(format_site_log):
-    def unkilled(sites, statuses):
-        kept = {key: status for key, status in statuses.items() if status != "killed"}
-        return format_site_log(sites, kept)
+def site_log(sites, statuses) -> str:
+    """One line per mutant the tests did not kill."""
 
-    return unkilled
+    return "".join(
+        mutant_line(site, statuses[site.mutation_id]) + "\n"
+        for site in sites
+        if statuses.get(site.mutation_id, "killed") != "killed"
+    )
 
 
 def mutation_summary(forms) -> str:
@@ -165,17 +167,22 @@ def mutation_summary(forms) -> str:
     )
 
 
-def scan_summary(path, sites, changed, covered) -> str:
-    if not sites:
-        return ""
-    notes = []
-    if covered is not None:
-        missed = sum(not covered.get(site.mutation_id, True) for site in sites)
-        notes.append(f"{missed} uncovered")
-    if changed:
-        notes.append(f"{len(changed)} changed functions")
-    detail = f" ({', '.join(notes)})" if notes else ""
-    return f"Scan: {len(sites)} mutation sites in {path}{detail}\n"
+def _scan_summary(seen: dict):
+    def scanned(path, sites, changed, covered) -> str:
+        if not sites:
+            return ""
+        notes = []
+        if covered is not None:
+            missed = sum(not covered[site.mutation_id] for site in sites)
+            notes.append(f"{missed} uncovered")
+        elif not seen["options"].no_coverage:
+            notes.append("coverage unknown")
+        if changed:
+            notes.append(f"{len(changed)} changed functions")
+        detail = f" ({', '.join(notes)})" if notes else ""
+        return f"Scan: {len(sites)} mutation sites in {path}{detail}\n"
+
+    return scanned
 
 
 def _unwritten(mutate_file):
@@ -185,15 +192,75 @@ def _unwritten(mutate_file):
     return mutated
 
 
+def _relative(write_metrics):
+    def written(entries, root):
+        return write_metrics(entries, root).relative_to(root)
+
+    return written
+
+
+def _discoverable(directory: Path) -> bool:
+    """Whether `unittest discover -s .` finds a test*.py: at the top or inside importable packages."""
+
+    # shortcut: walks files like unittest does but ignores load_tests hooks;
+    # ask unittest itself if a project relies on them.
+    folders = [directory]
+    while folders:
+        for path in folders.pop().iterdir():
+            if path.is_file() and fnmatch.fnmatch(path.name, "test*.py"):
+                return True
+            if path.is_dir() and (path / "__init__.py").is_file():
+                folders.append(path)
+    return False
+
+
+def _tests_dir(command, directory: Path):
+    """Point a default `unittest discover` at tests/ or test/ when `-s .` finds no tests."""
+
+    if not isinstance(command, list):
+        return command
+    base = command[:-2] if command[-2:] == ["-s", "."] else command
+    if base[-2:] != ["unittest", "discover"] or _discoverable(directory):
+        return command
+    for name in ("tests", "test"):
+        if (directory / name).is_dir():
+            return base + ["-s", name]
+    return command
+
+
+def python_tests(ran: list[str]) -> list:
+    """Find tests/ for the default Python runs, and record each coverage run in `ran`."""
+
+    runners = import_module("ub_cli.vendor.crapper.runners")
+    mutator = import_module("ub_cli.vendor.mutator.engine")
+    run_shell, test_plan = runners.run_shell, mutator.test_plan
+
+    def shell(command, cwd):
+        command = _tests_dir(command, cwd)
+        if isinstance(command, str) or command[2:4] == ["coverage", "run"]:
+            ran.append(command if isinstance(command, str) else shlex.join(command))
+        return run_shell(command, cwd)
+
+    def plan(*args):
+        command, directory = test_plan(*args)
+        return _tests_dir(command, directory), directory
+
+    return [(runners, "run_shell", shell), (mutator, "test_plan", plan), (check, "test_plan", plan)]
+
+
 def _replacements(command: str, engine, verbose: bool) -> list:
-    seen = {}
+    seen = {"ran": []}
     replacements = [(engine, "select_files", _strict_selection(engine.select_files, seen))]
+    if command != "dry":
+        replacements += python_tests(seen["ran"])
     if command == "crap":
         replacements.append(
             (engine, "analyze_files", _strict_analysis(engine.analyze_files, verbose, seen))
         )
     if verbose:
         return replacements
+    if command in ("crap", "dry"):
+        replacements.append((engine, "write_metrics", _relative(engine.write_metrics)))
     if command == "crap":
         return replacements + [
             (engine, "run_coverage", _quiet(engine.run_coverage)),
@@ -206,10 +273,10 @@ def _replacements(command: str, engine, verbose: bool) -> list:
     mutator = import_module("ub_cli.vendor.mutator.engine")
     return replacements + [
         (runners, "run_coverage", _quiet(runners.run_coverage)),
-        (engine, "format_site_log", _site_log(engine.format_site_log)),
+        (engine, "format_site_log", site_log),
         (engine, "format_results", mutation_summary),
         (engine, "mutate_file", _unwritten(engine.mutate_file)),
-        (mutator, "format_scan", scan_summary),
+        (mutator, "format_scan", _scan_summary(seen)),
     ]
 
 

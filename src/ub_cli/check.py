@@ -26,10 +26,14 @@ from ub_cli.vendor.mutator.runner import CommandRunner, test_plan
 from tree_sitter_language_pack import Error as ParserError
 
 
-NO_EXECUTED_LINES = (
-    "Coverage reports show no executed lines in any analyzed function. "
-    "Did the coverage command run the tests?"
-)
+def no_executed_lines(commands: list[str]) -> str:
+    """Why coverage proves nothing, naming the coverage commands that ran."""
+
+    ran = " and ".join(f"`{command}`" for command in commands) or "the coverage command"
+    return (
+        "Coverage reports show no executed lines in any analyzed function. "
+        f"Did {ran} run the tests?"
+    )
 
 
 def unexecuted(entries) -> bool:
@@ -38,12 +42,19 @@ def unexecuted(entries) -> bool:
     return bool(entries) and not any(entry.coverage for entry in entries)
 
 
+def crap_line(entry) -> str:
+    return (
+        f"{entry.crap:.1f} CRAP, {entry.complexity} CC, {entry.coverage:.0f}% covered: "
+        f"{entry.namespace}/{entry.name}"
+    )
+
+
+def mutant_line(site, status: str) -> str:
+    return f"{site.file}:{site.line} {status} {site.description}"
+
+
 def _crap_failures(entries) -> list[str]:
-    return [
-        f"CRAP {entry.crap:.1f} >= 10 in {entry.namespace}/{entry.name}"
-        for entry in entries
-        if entry.crap is not None and entry.crap >= 10
-    ]
+    return [crap_line(entry) for entry in entries if entry.crap is not None and entry.crap >= 10]
 
 
 def _dry_failures(candidates) -> list[str]:
@@ -56,13 +67,14 @@ def _dry_failures(candidates) -> list[str]:
     ]
 
 
-def _mutation_failures(forms) -> list[str]:
-    return [
-        f"{form.file}:{form.line} has {form.survived} surviving "
-        f"and {form.uncovered} uncovered mutants"
-        for form in forms
-        if form.survived or form.uncovered
+def _mutation_failures(results) -> list[str]:
+    # A covered site with no outcome counts as survived, as the engine's form totals count it.
+    statuses = [
+        (site, result.statuses.get(site.mutation_id, "survived"))
+        for result in results
+        for site in result.sites
     ]
+    return [mutant_line(site, status) for site, status in statuses if status != "killed"]
 
 
 def _analyze(root: Path, files: list[Path], bundle) -> tuple[list, list, list[str]]:
@@ -242,13 +254,13 @@ def _verdict(failures: list[str], incomplete: list[str]) -> int:
     return 0
 
 
-def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage_log: str):
+def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage_log: str, ran):
     """Report CRAP and duplication. Return their failures and incomplete reasons."""
 
     entries, measured, incomplete = _analyze(root, files, bundle)
     write_crap(entries, root)
     if unexecuted(measured):
-        incomplete.append(NO_EXECUTED_LINES)
+        incomplete.append(no_executed_lines(ran))
         measured = []
     if incomplete:
         print(coverage_log, end="", file=sys.stderr)
@@ -269,6 +281,7 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
 
 def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     forms = []
+    results = []
     incomplete = []
     for path in files:
         result = mutate_file(
@@ -291,9 +304,10 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
         if options.verbose:
             print(format_site_log(result.sites, result.statuses), end="")
         forms.extend(result.forms)
+        results.append(result)
     if options.verbose:
         print(format_results(forms), end="")
-    failures = _mutation_failures(forms)
+    failures = _mutation_failures(results)
     killed = sum(form.killed for form in forms)
     survived = sum(form.survived for form in forms)
     uncovered = sum(form.uncovered for form in forms)
@@ -305,12 +319,12 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     return failures, incomplete
 
 
-def _gates(root: Path, files, duplicates_files, options, coverage_log: str) -> int:
+def _gates(root: Path, files, duplicates_files, options, coverage_log: str, ran) -> int:
     runner = CommandRunner()
     baselines = _baselines(root, files, runner, options.test_command)
     bundle = load_bundle(root)
     failures, incomplete = _static_gates(
-        root, files, duplicates_files, bundle, options, coverage_log
+        root, files, duplicates_files, bundle, options, coverage_log, ran
     )
     if incomplete:
         return _verdict(failures, incomplete)
@@ -318,7 +332,7 @@ def _gates(root: Path, files, duplicates_files, options, coverage_log: str) -> i
     return _verdict(failures + mutation_failures, incomplete)
 
 
-def _check(options) -> int:
+def _check(options, ran: list[str]) -> int:
     root = options.root.resolve()
     if not root.is_dir():
         raise ValueError(f"Project root is not a directory: {root}")
@@ -330,10 +344,10 @@ def _check(options) -> int:
     if not files and not duplicates_files:
         raise ValueError("No supported source files found.")
     if options.use_existing_coverage:
-        return _gates(root, files, duplicates_files, options, "")
+        return _gates(root, files, duplicates_files, options, "", ran)
     coverage_log, stale = _generate_coverage(root, files, options)
     with _set_aside(stale):
-        return _gates(root, files, duplicates_files, options, coverage_log)
+        return _gates(root, files, duplicates_files, options, coverage_log, ran)
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -389,8 +403,12 @@ def run(argv: list[str] | None = None) -> int:
     if options.max_workers is not None and options.max_workers < 1:
         print("--max-workers requires a positive integer", file=sys.stderr)
         return 2
+    from ub_cli.engines import _swapped, python_tests
+
+    ran = []
     try:
-        return _check(options)
+        with _swapped(python_tests(ran)):
+            return _check(options, ran)
     except (OSError, ValueError, ParserError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
