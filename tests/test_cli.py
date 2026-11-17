@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ub_cli.cli import main, run
+from ub_cli.engines import HELP_LINE, VERBOSE_HELP
 
 
 def invoke(entrypoint, arguments):
@@ -18,22 +19,22 @@ def invoke(entrypoint, arguments):
 
 
 class UpstreamParityTests(unittest.TestCase):
-    def test_subcommands_preserve_upstream_reports_and_status(self):
+    def test_verbose_subcommands_preserve_upstream_reports_and_status(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "example.py").write_text(
                 "def add(a, b):\n    return a + b\n", encoding="utf-8"
             )
             cases = (
-                ("crap", "ub_cli.vendor.crapper.cli", ["--no-coverage"]),
-                ("dry", "ub_cli.vendor.dryer.cli", []),
-                ("mutate", "ub_cli.vendor.mutator.cli", ["--scan", "--no-coverage"]),
+                ("crap", "ub_cli.vendor.crapper.cli", ["--no-coverage"], []),
+                ("dry", "ub_cli.vendor.dryer.cli", [], []),
+                ("mutate", "ub_cli.vendor.mutator.cli", ["--scan", "--no-coverage"], ["--verbose"]),
             )
-            for command, module, options in cases:
+            for command, module, options, engine_verbose in cases:
                 with self.subTest(command=command):
                     arguments = ["--root", str(root), *options]
-                    upstream = invoke(importlib.import_module(module).run, arguments)
-                    unified = invoke(run, [command, *arguments])
+                    upstream = invoke(importlib.import_module(module).run, arguments + engine_verbose)
+                    unified = invoke(run, [command, *arguments, "--verbose"])
                     self.assertEqual(upstream, unified)
 
     def test_subcommand_help_names_the_ub_command(self):
@@ -43,7 +44,12 @@ class UpstreamParityTests(unittest.TestCase):
                 status, output, error = invoke(run, [command, "--help"])
                 self.assertEqual((0, ""), (status, error))
                 self.assertTrue(upstream.startswith(f"Usage: {engine} [options]"), upstream)
-                self.assertEqual(f"Usage: ub {command}" + upstream.removeprefix(f"Usage: {engine}"), output)
+                expected = f"Usage: ub {command}" + upstream.removeprefix(f"Usage: {engine}")
+                if command in VERBOSE_HELP:
+                    verbose = f"  --verbose                     {VERBOSE_HELP[command]}\n"
+                    self.assertIn(HELP_LINE, expected)
+                    expected = expected.replace(HELP_LINE, HELP_LINE + verbose, 1)
+                self.assertEqual(expected, output)
 
     def test_top_level_help_names_all_commands(self):
         status, output, _ = invoke(run, ["--help"])

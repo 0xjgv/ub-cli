@@ -26,6 +26,18 @@ from ub_cli.vendor.mutator.runner import CommandRunner, test_plan
 from tree_sitter_language_pack import Error as ParserError
 
 
+NO_EXECUTED_LINES = (
+    "Coverage reports show no executed lines in any analyzed function. "
+    "Did the coverage command run the tests?"
+)
+
+
+def unexecuted(entries) -> bool:
+    """Whether coverage was read but no analyzed function ran a line."""
+
+    return bool(entries) and not any(entry.coverage for entry in entries)
+
+
 def _crap_failures(entries) -> list[str]:
     return [
         f"CRAP {entry.crap:.1f} >= 10 in {entry.namespace}/{entry.name}"
@@ -235,11 +247,8 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
 
     entries, measured, incomplete = _analyze(root, files, bundle)
     write_crap(entries, root)
-    if measured and not any(entry.coverage for entry in measured):
-        incomplete.append(
-            "Coverage reports show no executed lines in any analyzed function. "
-            "Did the coverage command run the tests?"
-        )
+    if unexecuted(measured):
+        incomplete.append(NO_EXECUTED_LINES)
         measured = []
     if incomplete:
         print(coverage_log, end="", file=sys.stderr)

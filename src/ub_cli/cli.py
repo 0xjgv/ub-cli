@@ -1,6 +1,5 @@
-"""Dispatch upstream commands without interpreting their flags or exit codes."""
+"""Dispatch ub commands to the engines and the ub-only tools."""
 
-from importlib import import_module
 from importlib.metadata import version
 import sys
 
@@ -40,13 +39,10 @@ def run(argv: list[str]) -> int:
 
     command, *args = argv
     if command in ENGINES:
-        engine = import_module(f"ub_cli.vendor.{ENGINES[command]}.cli")
-        # shortcut: rewrites upstream's module HELP, which hardcodes the engine name
-        # and ignores argv[0]; tests catch a renamed or reformatted HELP. Drop this
-        # once the engines accept a program name.
-        engine.HELP = engine.HELP.replace(f"Usage: {ENGINES[command]} ", f"Usage: ub {command} ", 1)
-        execute = engine.run
-    elif command == "update":
+        from ub_cli.engines import run as run_engine
+
+        return run_engine(command, ENGINES[command], args)
+    if command == "update":
         from ub_cli.update import run as execute
     elif command == "skill":
         from ub_cli.skill import run as execute
