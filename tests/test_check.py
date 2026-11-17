@@ -533,6 +533,8 @@ class FocusTests(unittest.TestCase):
         )
         self.write("src/pkg/user.py", "from .mod import add\n")
         self.write("target/mutation-workers/pkg/copy.py", "import pkg.mod\n")
+        self.write(".worktrees/other/src/pkg/copy.py", "import pkg.mod\n")
+        self.write("node_modules/pkg/copy.py", "import pkg.mod\n")
         graph = check.python_imports(self.root)
         imports = {name: imported for name, imported in graph.values()}
         self.assertEqual({"pkg", "pkg.mod"}, imports["pkg"])
@@ -591,6 +593,9 @@ class FocusTests(unittest.TestCase):
             (command, []),
             (command + " -k slow", ["test_a"]),
             (command + " '-k' slow", ["test_a"]),
+            (command + " -kslow", ["test_a"]),
+            (command + " -qk slow", ["test_a"]),
+            (command + " # quiet", ["test_a"]),
             (command + " 2>&1", ["test_a"]),
             ("cd tests && python -m unittest discover", ["test_a"]),
             ("python -m pytest", ["test_a"]),

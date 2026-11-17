@@ -337,7 +337,11 @@ def python_imports(root: Path) -> dict[Path, tuple[str, set[str]]]:
 
     graph = {}
     for directory, folders, names in os.walk(root):
-        folders[:] = [folder for folder in folders if folder not in SKIP_LINK]
+        folders[:] = [
+            folder
+            for folder in folders
+            if folder not in SKIP_LINK and folder != "node_modules" and not folder.startswith(".")
+        ]
         for file_name in names:
             if file_name.endswith(".py"):
                 path = Path(directory) / file_name
@@ -350,7 +354,7 @@ def affected_tests(graph, module: str) -> list[list[str]]:
     """The test*.py module stems that import `module`, grouped by import distance, nearest first."""
 
     # shortcut: import statements only; import_module and subprocess imports are missed,
-    # which costs a full-command rerun, never a verdict.
+    # which costs a full-command rerun, never a verdict. Follow them if survivors' reruns dominate.
     reached = {module}
     frontier = {module}
     tiers = []
@@ -359,7 +363,11 @@ def affected_tests(graph, module: str) -> list[list[str]]:
             name
             for name, imported in graph.values()
             if name not in reached
-            and any(item == target or item.startswith(target + ".") for item in imported for target in frontier)
+            and any(
+                item == target or item.startswith(target + ".")
+                for item in imported
+                for target in frontier
+            )
         }
         reached |= frontier
         tiers.append(
@@ -375,22 +383,26 @@ def affected_tests(graph, module: str) -> list[list[str]]:
 def focused_command(command, tests: list[str]):
     """`command` narrowed to `tests` and stopped at the first failure, or None.
 
-    Only a lone `unittest discover` command with no -k of its own is narrowed:
-    appended words must reach unittest, and another -k would widen the user's selection.
+    Only a lone `unittest discover` command with no -k and no comment is
+    narrowed: appended words must reach unittest, and another -k would widen
+    the user's selection.
     """
 
     if isinstance(command, list):
         words = command
     else:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.commenters = ""
         try:
             words = list(lexer)
         except ValueError:
             return None
-    if not tests or "-k" in words or ("unittest", "discover") not in zip(words, words[1:]):
+    if not tests or ("unittest", "discover") not in zip(words, words[1:]):
         return None
-    if any(not word.strip("();<>|&") for word in words):
-        return None
+    for word in words:
+        short_k = word.startswith("-") and not word.startswith("--") and "k" in word
+        if short_k or word.startswith("#") or not word.strip("();<>|&"):
+            return None
     extra = ["-f"] + [word for test in tests for word in ("-k", f"*{test}.*")]
     return command + extra if isinstance(command, list) else f"{command} {shlex.join(extra)}"
 
