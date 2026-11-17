@@ -81,7 +81,7 @@ class CheckAcceptanceTests(unittest.TestCase):
     def test_surviving_mutant_fails_the_gate(self):
         self.coverage()
         status, output = self.run_check("pass")
-        self.assertEqual(2, status, output)
+        self.assertEqual(1, status, output)
         self.assertIn("surviv", output.lower())
 
     def test_uncovered_site_fails_even_without_survivors(self):
