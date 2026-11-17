@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
+import fnmatch
 import os
+import shlex
 import sys
 import tempfile
 from pathlib import Path
@@ -23,6 +26,7 @@ from ub_cli.vendor.mutator.engine import mutate_file, restore_backups
 from ub_cli.vendor.mutator.coverage import covered_lines
 from ub_cli.vendor.mutator.report import format_results, format_site_log
 from ub_cli.vendor.mutator.runner import CommandRunner, test_plan
+from ub_cli.vendor.mutator.workers import SKIP_LINK
 from tree_sitter_language_pack import Error as ParserError
 
 
@@ -279,22 +283,197 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
     return crap + dry, incomplete + warnings
 
 
+class FocusedRunner(CommandRunner):
+    """Run a mutant against the tests nearest its module, then the full command.
+
+    Each focused command runs in turn; a failure is a kill. When every focused
+    command passes, the full command reruns, so a mutant only some other test
+    kills is still killed and no survivor is reported that the full command
+    would not report.
+    """
+
+    focus = ()
+
+    def run(self, command, cwd, timeout):
+        # Baselines run without a timeout; only mutant runs have one.
+        for focused in self.focus if timeout is not None else ():
+            result = super().run(focused, cwd, timeout)
+            if result.timed_out or result.code != 0:
+                return result
+        return super().run(command, cwd, timeout)
+
+
+def _module_name(path: Path) -> str:
+    parts = [] if path.name == "__init__.py" else [path.stem]
+    folder = path.parent
+    while (folder / "__init__.py").is_file():
+        parts.insert(0, folder.name)
+        folder = folder.parent
+    return ".".join(parts)
+
+
+def _imports(path: Path, name: str) -> set[str]:
+    """Every module `path` names in an import statement, at any depth."""
+
+    try:
+        tree = ast.parse(path.read_bytes())
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    package = name.split(".") if path.name == "__init__.py" else name.split(".")[:-1]
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = package[: len(package) - node.level + 1] if node.level else []
+            base = ".".join(prefix + ([node.module] if node.module else []))
+            found.add(base)
+            found.update(f"{base}.{alias.name}".lstrip(".") for alias in node.names)
+    return found
+
+
+def python_imports(root: Path) -> dict[Path, tuple[str, set[str]]]:
+    """Each Python file under `root` with its module name and the modules it imports."""
+
+    graph = {}
+    for directory, folders, names in os.walk(root):
+        folders[:] = [
+            folder
+            for folder in folders
+            if folder not in SKIP_LINK and folder != "node_modules" and not folder.startswith(".")
+        ]
+        for file_name in names:
+            if file_name.endswith(".py"):
+                path = Path(directory) / file_name
+                name = _module_name(path)
+                graph[path] = (name, _imports(path, name))
+    return graph
+
+
+def affected_tests(graph, module: str) -> list[list[str]]:
+    """The test*.py module stems that import `module`, grouped by import distance, nearest first."""
+
+    # shortcut: import statements only; import_module and subprocess imports are missed,
+    # which costs a full-command rerun, never a verdict. Follow them if survivors' reruns dominate.
+    reached = {module}
+    frontier = {module}
+    tiers = []
+    while frontier:
+        frontier = {
+            name
+            for name, imported in graph.values()
+            if name not in reached
+            and any(
+                item == target or item.startswith(target + ".")
+                for item in imported
+                for target in frontier
+            )
+        }
+        reached |= frontier
+        tiers.append(
+            sorted(
+                path.stem
+                for path, (name, _) in graph.items()
+                if name in frontier and fnmatch.fnmatch(path.name, "test*.py")
+            )
+        )
+    return [tier for tier in tiers if tier]
+
+
+def _words(command) -> list[str] | None:
+    """A command's words as a POSIX shell splits them, with `#` kept as a word."""
+
+    if isinstance(command, list):
+        return command
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _blocks_focus(word: str) -> bool:
+    """A -k flag, a comment, or a shell operator."""
+
+    short_k = word.startswith("-") and not word.startswith("--") and "k" in word
+    return short_k or word.startswith("#") or not word.strip("();<>|&")
+
+
+def focused_command(command, tests: list[str]):
+    """`command` narrowed to `tests` and stopped at the first failure, or None.
+
+    Only a lone `unittest discover` command with no -k and no comment is
+    narrowed: appended words must reach unittest, and another -k would widen
+    the user's selection.
+    """
+
+    words = _words(command)
+    if not tests or words is None or ("unittest", "discover") not in zip(words, words[1:]):
+        return None
+    if any(_blocks_focus(word) for word in words):
+        return None
+    extra = ["-f"] + [word for test in tests for word in ("-k", f"*{test}.*")]
+    return command + extra if isinstance(command, list) else f"{command} {shlex.join(extra)}"
+
+
+def _focuser(root: Path, runner, override: str | None):
+    """Return a source file's focused commands, one per test module.
+
+    Nearest import first; within one distance, the module named for the file
+    (`test_<stem>`), then the fastest on the original code.
+    A module whose focused command fails on the original code is left out.
+    """
+
+    graph = None
+    baselines = {}
+
+    def focus(path: Path) -> list:
+        nonlocal graph
+        if language_of(path) != "python":
+            return []
+        if graph is None:
+            graph = python_imports(root)
+        command, directory = test_plan(root, path, "python", override)
+        commands = []
+        for tier in affected_tests(graph, _module_name(path)):
+            timed = []
+            for test in tier:
+                focused = focused_command(command, [test])
+                if focused is None:
+                    return []
+                key = (str(focused), str(directory))
+                if key not in baselines:
+                    baselines[key] = runner.run(focused, directory, None)
+                if baselines[key].code == 0:
+                    timed.append((test != f"test_{path.stem}", baselines[key].seconds, focused))
+            commands += [focused for *_order, focused in sorted(timed, key=lambda item: item[:2])]
+        return commands
+
+    return focus
+
+
 def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     forms = []
     results = []
     incomplete = []
+    focus = _focuser(root, runner, options.test_command)
     for path in files:
+        covered = _mutation_coverage(root, path, bundle)
+        # A file without covered lines runs no mutant, so its focus would only cost baselines.
+        runner.focus = focus(path) if covered else []
         result = mutate_file(
             path,
             root,
             runner=runner,
-            covered_lines=_mutation_coverage(root, path, bundle),
+            covered_lines=covered,
             ignore_coverage=False,
             mutate_all=True,
             lines=None,
             test_command=options.test_command,
             timeout_factor=10.0,
-            mutation_warning=50,
+            # The per-file mutant count is noise on a passing run.
+            mutation_warning=50 if options.verbose else sys.maxsize,
             baselines=baselines,
             max_workers=options.max_workers,
         )
@@ -320,7 +499,7 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
 
 
 def _gates(root: Path, files, duplicates_files, options, coverage_log: str, ran) -> int:
-    runner = CommandRunner()
+    runner = FocusedRunner()
     baselines = _baselines(root, files, runner, options.test_command)
     bundle = load_bundle(root)
     failures, incomplete = _static_gates(
