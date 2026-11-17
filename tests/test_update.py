@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import os
@@ -6,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ub_cli.signature import ed25519_verify, verify
+from ub_cli.signature import G, ed25519_verify, p, point_decompress, point_equal, point_mul, q, recover_x, verify
 from ub_cli import update
 from ub_cli.update import run
 
@@ -39,18 +40,56 @@ class SignatureTests(unittest.TestCase):
         legacy = (FIXTURES / "legacy.txt.minisig").read_text()
         self.assertEqual("legacy", verify(KEY, (FIXTURES / "legacy.txt").read_bytes(), legacy))
 
+    def test_point_equal_compares_projective_points(self):
+        point = point_mul(3, G)
+        self.assertTrue(point_equal(point, tuple(c * 5 % p for c in point)))
+        self.assertFalse(point_equal(point, (-point[0] % p, point[1], point[2], -point[3] % p)))
+        self.assertFalse(point_equal(point, (point[0], -point[1] % p, point[2], -point[3] % p)))
+
+    def test_decompress_rejects_noncanonical_and_off_curve_encodings(self):
+        self.assertEqual(recover_x(1, 0), 0)
+        self.assertIsNone(recover_x(1, 1))  # x = 0 has no negative encoding
+        self.assertIsNone(recover_x(p - 2, 0))  # y = -2 is not on the curve
+        self.assertIsNone(point_decompress(p.to_bytes(32, "little")))  # y = p is y = 0, encoded non-canonically
+
+    def test_ed25519_rejects_wrong_lengths_and_noncanonical_s(self):
+        public, message, signature = map(bytes.fromhex, RFC_VECTORS[0])
+        self.assertFalse(ed25519_verify(public, message, signature + b"\0"))
+        self.assertFalse(ed25519_verify(public + b"\0", message, signature))
+        # With the identity as key and R, s = 0 verifies, so only the range check rejects s = q.
+        identity = (1).to_bytes(32, "little")
+        self.assertTrue(ed25519_verify(identity, b"m", identity + bytes(32)))
+        self.assertFalse(ed25519_verify(identity, b"m", identity + q.to_bytes(32, "little")))
+
     def test_rejects_tampering_and_other_keys(self):
         lines = SIGNATURE.splitlines()
+        blob, global_signature = base64.b64decode(lines[1]), base64.b64decode(lines[3])
+        key = base64.b64decode(KEY)
+        encode = lambda data: base64.b64encode(data).decode()
+        signature = lambda blob=lines[1], comment=lines[2], global_signature=lines[3]: "\n".join(
+            [lines[0], blob, comment, global_signature])
         other_key = "RWTLb536jI8+3VG6zclr5kbCi69IAiL7HkhEefxbOJSlJRl2v9muK6ow"
         cases = {
-            "message": (KEY, MESSAGE + b"x", SIGNATURE),
-            "trusted comment": (KEY, MESSAGE, "\n".join([*lines[:2], "trusted comment: ub v0.0.1", lines[3]])),
-            "other key": (other_key, MESSAGE, SIGNATURE),
-            "truncated": (KEY, MESSAGE, "\n".join(lines[:3])),
-            "not base64": (KEY, MESSAGE, "\n".join([lines[0], "!!", *lines[2:]])),
+            "message": (KEY, MESSAGE + b"x", SIGNATURE, "verification failed"),
+            "trusted comment": (KEY, MESSAGE, signature(comment="trusted comment: ub v0.0.1"), "verification failed"),
+            "other key": (other_key, MESSAGE, SIGNATURE, "different key"),
+            "key id": (KEY, MESSAGE, signature(blob=encode(blob[:2] + bytes(8) + blob[10:])), "different key"),
+            "key prefix": (encode(b"Ex" + key[2:]), MESSAGE, SIGNATURE, "invalid minisign public key"),
+            "key length": (encode(key + b"\0"), MESSAGE, SIGNATURE, "invalid minisign public key"),
+            "key not base64": (KEY[:5] + "!" + KEY[5:], MESSAGE, SIGNATURE, "base64"),
+            "truncated": (KEY, MESSAGE, "\n".join(lines[:3]), "malformed"),
+            "untrusted comment": (KEY, MESSAGE, signature(comment="untrusted comment: x"), "malformed"),
+            "not base64": (KEY, MESSAGE, signature(blob="!!"), "base64"),
+            "signature not base64": (KEY, MESSAGE, signature(blob=lines[1][:5] + "!" + lines[1][5:]), "base64"),
+            "global signature not base64": (
+                KEY, MESSAGE, signature(global_signature=lines[3][:5] + "!" + lines[3][5:]), "base64"),
+            "signature length": (KEY, MESSAGE, signature(blob=encode(blob + b"\0")), "malformed"),
+            "global signature length": (
+                KEY, MESSAGE, signature(global_signature=encode(global_signature + b"\0")), "malformed"),
+            "algorithm": (KEY, MESSAGE, signature(blob=encode(b"XX" + blob[2:])), "unsupported"),
         }
-        for name, arguments in cases.items():
-            with self.subTest(name), self.assertRaises(ValueError):
+        for name, (*arguments, error) in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, error):
                 verify(*arguments)
 
 

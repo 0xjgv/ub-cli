@@ -78,11 +78,15 @@ def ed25519_verify(public: bytes, message: bytes, signature: bytes) -> bool:
     return point_equal(point_mul(s, G), point_add(R, point_mul(h, A)))
 
 
-def verify(public_key: str, message: bytes, signature: str) -> str:
-    """Return the trusted comment of a valid minisign signature, or raise ValueError."""
+def _public_key(public_key: str) -> bytes:
     key = base64.b64decode(public_key, validate=True)
     if len(key) != 42 or key[:2] != b"Ed":
         raise ValueError("invalid minisign public key")
+    return key
+
+
+def _signature_parts(signature: str) -> tuple[bytes, bytes, bytes, str, bytes]:
+    """Return the algorithm, key id, file signature, trusted comment and global signature."""
     lines = signature.splitlines()
     if len(lines) != 4 or not lines[2].startswith(TRUSTED):
         raise ValueError("malformed minisign signature")
@@ -90,14 +94,19 @@ def verify(public_key: str, message: bytes, signature: str) -> str:
     global_signature = base64.b64decode(lines[3], validate=True)
     if len(blob) != 74 or len(global_signature) != 64:
         raise ValueError("malformed minisign signature")
-    algorithm, key_id, file_signature = blob[:2], blob[2:10], blob[10:]
+    return blob[:2], blob[2:10], blob[10:], lines[2][len(TRUSTED):], global_signature
+
+
+def verify(public_key: str, message: bytes, signature: str) -> str:
+    """Return the trusted comment of a valid minisign signature, or raise ValueError."""
+    key = _public_key(public_key)
+    algorithm, key_id, file_signature, trusted, global_signature = _signature_parts(signature)
     if key_id != key[2:10]:
         raise ValueError("signature was made with a different key")
     if algorithm == b"ED":
         message = hashlib.blake2b(message).digest()
     elif algorithm != b"Ed":
         raise ValueError("unsupported minisign signature algorithm")
-    trusted = lines[2][len(TRUSTED):]
     if not (ed25519_verify(key[10:], message, file_signature)
             and ed25519_verify(key[10:], file_signature + trusted.encode(), global_signature)):
         raise ValueError("signature verification failed")

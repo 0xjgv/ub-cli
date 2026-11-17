@@ -9,12 +9,12 @@ from tempfile import NamedTemporaryFile
 AGENT_DIRS = {"codex": ".agents", "claude": ".claude"}
 
 
-def install(targets: list[str], force: bool) -> int:
-    directories = {target: Path.home() / AGENT_DIRS[target] / "skills" / "ub-mode" for target in targets}
+def _pending(directories, force: bool) -> list[tuple[Path, bytes]] | None:
+    """Return the files to write, or None when one differs and force is off."""
     bundled = Path(__file__).parent / "skills" / "ub-mode"
     pending = []
     # Check every file before changing any. Publish each skill after its license.
-    for directory in directories.values():
+    for directory in directories:
         for name in ("LICENSE", "SKILL.md"):
             path = directory / name
             data = (bundled / name).read_bytes()
@@ -22,24 +22,35 @@ def install(targets: list[str], force: bool) -> int:
                 continue
             if (path.exists() or path.is_symlink()) and not force:
                 print(f"{path} already exists and differs. Use --force to replace it.", file=sys.stderr)
-                return 1
+                return None
             if path.is_dir():
                 raise IsADirectoryError(path)
             pending.append((path, data))
+    return pending
 
+
+def _publish(path: Path, data: bytes, force: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = NamedTemporaryFile(dir=path.parent, delete=False)
+    temporary = Path(staged.name)
+    try:
+        with staged:
+            staged.write(data)
+        if force:
+            temporary.replace(path)
+        else:
+            os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def install(targets: list[str], force: bool) -> int:
+    directories = {target: Path.home() / AGENT_DIRS[target] / "skills" / "ub-mode" for target in targets}
+    pending = _pending(directories.values(), force)
+    if pending is None:
+        return 1
     for path, data in pending:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        staged = NamedTemporaryFile(dir=path.parent, delete=False)
-        temporary = Path(staged.name)
-        try:
-            with staged:
-                staged.write(data)
-            if force:
-                temporary.replace(path)
-            else:
-                os.link(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _publish(path, data, force)
 
     changed = {path.parent for path, _ in pending}
     for target, directory in directories.items():
