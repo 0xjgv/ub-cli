@@ -2,6 +2,9 @@ import importlib.util
 import unittest
 from pathlib import Path
 
+from ub_cli.vendor.crapper.discover import iter_source_files as crap_files
+from ub_cli.vendor.dryer.discover import iter_source_files as dry_files
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "vendor.py"
 spec = importlib.util.spec_from_file_location("vendor", SCRIPT)
 vendor = importlib.util.module_from_spec(spec)
@@ -36,6 +39,18 @@ class RewriteTests(unittest.TestCase):
         for source in ("import crapper as c\n", "import os, dryer\n"):
             with self.subTest(source=source), self.assertRaises(SystemExit):
                 vendor.rewrite(source, Path("x.py"))
+
+
+class LocationTests(unittest.TestCase):
+    def test_engines_skip_the_vendored_tree(self):
+        # The engines skip directories named `vendor`; a repin that drops that rule
+        # makes every ub command analyze the engines again.
+        package = Path(vendor.VENDOR).parent
+        for discover in (crap_files, dry_files):
+            with self.subTest(discover=discover.__module__):
+                files = discover([package])
+                self.assertIn(package / "check.py", files)
+                self.assertFalse([path for path in files if vendor.VENDOR in path.parents])
 
 
 if __name__ == "__main__":
