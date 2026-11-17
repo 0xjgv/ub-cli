@@ -44,8 +44,9 @@ Run `minisign -V -P <key above> -m checksums.txt`, compare the archive's
 `shasum -a 256` (or `sha256sum`) with the entry for its filename, and extract
 `ub` into a directory on your `PATH`. To uninstall, remove that executable.
 
-To install from a source checkout, run `make install` with Git and uv available,
-or use `python -m pip install .` in a Python 3.11+ virtual environment.
+To install the Python package instead, run `uv tool install ub-cli` or
+`python -m pip install ub-cli` with Python 3.11+. From a source checkout, run
+`make install` with uv available, or `python -m pip install .`.
 
 ## Install the agent skill
 
@@ -106,9 +107,18 @@ directory so the tests exercise the mutated copy.
 
 ## Development and releases
 
-Run `make test` for the test suite, `make check-upstreams` to compare engine
-pins, and `make build-native` to produce the archive for the current machine
-under `dist/`. `make build` builds the Python wheel.
+Run `make test` for the test suite and `make build-native` to produce the
+archive for the current machine under `dist/`. `make build` builds the Python
+wheel.
+
+[Crapper](https://github.com/unclebob/crapper),
+[Dryer](https://github.com/unclebob/dryer), and
+[Mutator](https://github.com/unclebob/mutator) are vendored under
+`src/ub_cli/_vendor` at the commits in `src/ub_cli/_vendor/VENDORED`, with their
+imports rewritten to `ub_cli._vendor`. Never edit that directory by hand.
+`make check-upstreams` compares the pins with upstream and prints the update
+command, `python scripts/vendor.py NAME COMMIT`. The Release workflow fails when
+the directory differs from what `scripts/vendor.py` produces.
 
 `make release [BUMP=patch|minor|major]` bumps the version in `pyproject.toml`
 on a clean, up-to-date `main`, tags it, and pushes both. Rerunning it after an
@@ -122,7 +132,8 @@ repository owner pushed or re-ran it:
    `install.sh`, and upload everything to a draft release.
 4. On every platform, install from the draft with its `install.sh`, update
    with the new `ub`, and update from the previous published release.
-5. Publish the draft.
+5. Publish the draft, then publish the Python package to PyPI through trusted
+   publishing in the `pypi` environment.
 
 A published release is never modified. Running the workflow manually builds
 and tests the archives without creating a release.

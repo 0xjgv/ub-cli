@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dryer.model import Entry
+from ub_cli._vendor.dryer.model import Entry
 
 from ub_cli import check
 
