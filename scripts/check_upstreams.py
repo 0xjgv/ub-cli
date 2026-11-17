@@ -1,20 +1,14 @@
-"""Compare the project's pinned Git dependencies with their upstream HEADs."""
+"""Compare the vendored engines' pinned commits with their upstream HEADs."""
 
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
-project = Path(__file__).resolve().parents[1] / "pyproject.toml"
-with project.open("rb") as config:
-    dependencies = tomllib.load(config)["project"]["dependencies"]
+pins = Path(__file__).resolve().parents[1] / "src" / "ub_cli" / "_vendor" / "VENDORED"
+dependencies = [line.split() for line in pins.read_text().splitlines() if line and not line.startswith("#")]
 
 failed = False
-for dependency in dependencies:
-    name, separator, reference = dependency.partition(" @ git+")
-    if not separator:
-        continue
-    url, pin = reference.rsplit("@", 1)
+for name, url, pin in dependencies:
     result = subprocess.run(
         ["git", "ls-remote", "--exit-code", url, "HEAD"],
         text=True, stdout=subprocess.PIPE,
@@ -28,5 +22,6 @@ for dependency in dependencies:
     print(f"{name}: {status}  pinned={pin[:12]}  latest={head[:12]}")
     if head != pin:
         print(f"  {url.removesuffix('.git')}/compare/{pin}...{head}")
+        print(f"  update: python scripts/vendor.py {name} {head}")
 
 sys.exit(int(failed))

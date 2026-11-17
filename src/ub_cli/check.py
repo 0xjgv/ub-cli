@@ -9,20 +9,20 @@ import sys
 import tempfile
 from pathlib import Path
 
-from crapper.coverage import _profile_segments, load_bundle
-from crapper.crap import make_entry, sort_entries
-from crapper.discover import iter_source_files, language_of
-from crapper.languages import functions_in_file
-from crapper.metrics import write_metrics as write_crap
-from crapper.report import format_report
-from crapper.runners import run_coverage
-from dryer.discover import iter_source_files as dry_files
-from dryer.report import format_text, write_metrics as write_dry
-from dryer.scan import find_duplicates, scan_files
-from mutator.engine import mutate_file, restore_backups
-from mutator.coverage import covered_lines
-from mutator.report import format_results, format_site_log
-from mutator.runner import CommandRunner, test_plan
+from ub_cli._vendor.crapper.coverage import _profile_segments, load_bundle
+from ub_cli._vendor.crapper.crap import make_entry, sort_entries
+from ub_cli._vendor.crapper.discover import iter_source_files, language_of
+from ub_cli._vendor.crapper.languages import functions_in_file
+from ub_cli._vendor.crapper.metrics import write_metrics as write_crap
+from ub_cli._vendor.crapper.report import format_report
+from ub_cli._vendor.crapper.runners import run_coverage
+from ub_cli._vendor.dryer.discover import iter_source_files as dry_files
+from ub_cli._vendor.dryer.report import format_text, write_metrics as write_dry
+from ub_cli._vendor.dryer.scan import find_duplicates, scan_files
+from ub_cli._vendor.mutator.engine import mutate_file, restore_backups
+from ub_cli._vendor.mutator.coverage import covered_lines
+from ub_cli._vendor.mutator.report import format_results, format_site_log
+from ub_cli._vendor.mutator.runner import CommandRunner, test_plan
 from tree_sitter_language_pack import Error as ParserError
 
 

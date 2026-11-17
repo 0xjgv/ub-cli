@@ -24,9 +24,9 @@ class UpstreamParityTests(unittest.TestCase):
                 "def add(a, b):\n    return a + b\n", encoding="utf-8"
             )
             cases = (
-                ("crap", "crapper.cli", ["--no-coverage"]),
-                ("dry", "dryer.cli", []),
-                ("mutate", "mutator.cli", ["--scan", "--no-coverage"]),
+                ("crap", "ub_cli._vendor.crapper.cli", ["--no-coverage"]),
+                ("dry", "ub_cli._vendor.dryer.cli", []),
+                ("mutate", "ub_cli._vendor.mutator.cli", ["--scan", "--no-coverage"]),
             )
             for command, module, options in cases:
                 with self.subTest(command=command):
@@ -37,9 +37,9 @@ class UpstreamParityTests(unittest.TestCase):
 
     def test_subcommands_preserve_upstream_help(self):
         for command, module in (
-            ("crap", "crapper.cli"),
-            ("dry", "dryer.cli"),
-            ("mutate", "mutator.cli"),
+            ("crap", "ub_cli._vendor.crapper.cli"),
+            ("dry", "ub_cli._vendor.dryer.cli"),
+            ("mutate", "ub_cli._vendor.mutator.cli"),
         ):
             with self.subTest(command=command):
                 upstream = invoke(importlib.import_module(module).run, ["--help"])

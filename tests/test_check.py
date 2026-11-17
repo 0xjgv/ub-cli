@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from dryer.model import Entry
-from crapper.coverage import load_bundle
-from mutator.model import RunResult
+from ub_cli._vendor.crapper.coverage import load_bundle
+from ub_cli._vendor.dryer.model import Entry
+from ub_cli._vendor.mutator.model import RunResult
 
 from ub_cli import check
 

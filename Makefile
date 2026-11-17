@@ -1,7 +1,7 @@
 UV ?= uv
 PYTHON_VERSION ?= 3.11
 
-.PHONY: help install test build build-native check-upstreams
+.PHONY: help install test build build-native release check-upstreams
 
 help:
 	@printf '%s\n' \
@@ -9,6 +9,7 @@ help:
 	    'make test             Run the test suite' \
 	    'make build            Build the wheel in dist/' \
 	    'make build-native     Build the release archive for this host in dist/' \
+	    'make release [BUMP=patch|minor|major]  Tag the next version on main and push it; CI publishes the release' \
 	    'make check-upstreams  Compare pinned engines with their latest upstream commits'
 
 install:
@@ -25,3 +26,6 @@ check-upstreams:
 
 build-native:
 	sh scripts/build-release.sh
+
+release:
+	BUMP=$(BUMP) sh scripts/release.sh
