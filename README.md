@@ -83,26 +83,34 @@ use `ub check --use-existing-coverage`.
 
 ## Combined gate
 
-`ub check` checks the whole project. It generates coverage once, verifies the
-unmutated tests pass, and reruns every covered mutant so a previous kill cannot
-hide a weakened test. For faster differential mutation runs, use `ub mutate`.
+`ub check` checks the whole project, or the trees named with `-s PATH`. It
+generates coverage once, verifies the unmutated tests pass, and reruns every
+covered mutant so a previous kill cannot hide a weakened test. For faster
+differential mutation runs, use `ub mutate`.
+
+By default it prints one summary line per gate, the items that failed, and a
+verdict. The coverage command's output appears only when coverage fails or is
+incomplete. Pass `--verbose` for the full CRAP table, duplicate list, and
+mutant log, and to stream the coverage command's output.
 
 | Status | Meaning |
 | --- | --- |
 | 0 | All gates passed. |
 | 1 | A function scored CRAP ≥ 10, a pair scored similarity ≥ 0.8, or a mutation site was uncovered or survived. |
-| 2 | The check was incomplete, including missing coverage, a failing baseline, or a usage error. |
+| 2 | The check was incomplete, including missing coverage, coverage with no executed lines, a failing baseline, or a usage error. |
 
 The tools write their native reports to `.metrics/crap.edn`, `.metrics/dry.edn`,
 and `.metrics/mutate/`. Standalone commands retain their upstream exit codes.
 
 To use project-specific commands, pass `--coverage-command '...'` and
 `--test-command '...'`. The coverage command must produce a report in an
-upstream-supported location. A generation run reports unchanged coverage inputs
-as incomplete and names the paths. Use `--use-existing-coverage` when reuse is
-intentional. The test command runs first on the original code
-and then against mutations. Reference the source relative to the working
-directory so the tests exercise the mutated copy.
+upstream-supported location. A generation run that leaves every report
+unchanged is incomplete and names the paths. Reports it left unchanged beside a
+fresh one are set aside as `<report>.ub-stale` during the check, so only fresh
+coverage is read. Use `--use-existing-coverage` when reuse is intentional. The
+test command runs first on the original code and then against mutations.
+Reference the source relative to the working directory so the tests exercise
+the mutated copy.
 
 ## Development and releases
 
