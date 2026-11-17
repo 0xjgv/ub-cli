@@ -504,5 +504,159 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.assertEqual(source, (self.root / "add.go").read_text(encoding="utf-8"))
 
 
+class FocusTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def write(self, relative, text=""):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_module_names_follow_packages(self):
+        self.write("src/pkg/__init__.py")
+        self.write("src/pkg/sub/__init__.py")
+        self.assertEqual("pkg.sub.m", check._module_name(self.write("src/pkg/sub/m.py")))
+        self.assertEqual("pkg.sub", check._module_name(self.root / "src/pkg/sub/__init__.py"))
+        self.assertEqual("test_x", check._module_name(self.write("tests/test_x.py")))
+
+    def test_imports_resolve_relative_and_nested_imports(self):
+        self.write("src/pkg/__init__.py", "from . import mod\n")
+        self.write("src/pkg/sub/__init__.py", "from .. import other\n")
+        self.write(
+            "src/pkg/sub/m.py",
+            "import json\nfrom . import y\nfrom .. import mod\n"
+            "def f():\n    from pkg.lazy import thing\n",
+        )
+        self.write("src/pkg/user.py", "from .mod import add\n")
+        self.write("target/mutation-workers/pkg/copy.py", "import pkg.mod\n")
+        graph = check.python_imports(self.root)
+        imports = {name: imported for name, imported in graph.values()}
+        self.assertEqual({"pkg", "pkg.mod"}, imports["pkg"])
+        self.assertEqual({"pkg", "pkg.other"}, imports["pkg.sub"])
+        self.assertEqual(
+            {"json", "pkg.sub", "pkg.sub.y", "pkg", "pkg.mod", "pkg.lazy", "pkg.lazy.thing"},
+            imports["pkg.sub.m"],
+        )
+        self.assertEqual({"pkg.mod", "pkg.mod.add"}, imports["pkg.user"])
+        self.assertEqual({"pkg", "pkg.sub", "pkg.sub.m", "pkg.user"}, set(imports))
+
+    def test_affected_tests_follow_imports_transitively(self):
+        self.write("src/pkg/__init__.py")
+        self.write("src/pkg/mod.py", "def add(a, b):\n    return a + b\n")
+        self.write("src/pkg/user.py", "from . import mod\n")
+        self.write("tests/test_direct.py", "import pkg.mod\n")
+        self.write("tests/test_from.py", "from pkg.mod import add\n")
+        self.write("tests/test_indirect.py", "import pkg.user\n")
+        self.write("tests/test_lazy.py", "def f():\n    from pkg import mod\n")
+        self.write("tests/test_package.py", "import pkg\n")
+        self.write("tests/test_other.py", "import json\n")
+        self.write("tests/helper.py", "import pkg.mod\n")
+        graph = check.python_imports(self.root)
+        self.assertEqual(
+            ["test_direct", "test_from", "test_indirect", "test_lazy"],
+            check.affected_tests(graph, "pkg.mod"),
+        )
+
+    def test_affected_tests_reach_importers_listed_before_their_imports(self):
+        graph = {
+            Path("tests/test_late.py"): ("test_late", {"pkg.user"}),
+            Path("src/pkg/user.py"): ("pkg.user", {"pkg.mod"}),
+        }
+        self.assertEqual(["test_late"], check.affected_tests(graph, "pkg.mod"))
+
+    def test_focused_command_narrows_only_a_lone_unittest_discover(self):
+        command = "uv run python -m unittest discover -s tests -q"
+        self.assertEqual(
+            command + " -f -k '*test_a.*' -k '*test_b.*'",
+            check.focused_command(command, ["test_a", "test_b"]),
+        )
+        self.assertEqual(
+            ["py", "-m", "unittest", "discover", "-f", "-k", "*test_a.*"],
+            check.focused_command(["py", "-m", "unittest", "discover"], ["test_a"]),
+        )
+        for unfocused, tests in (
+            (command, []),
+            (command + " -k slow", ["test_a"]),
+            (command + " 2>&1", ["test_a"]),
+            ("cd tests && python -m unittest discover", ["test_a"]),
+            ("python -m pytest", ["test_a"]),
+            ("python -m unittest test_a", ["test_a"]),
+            ("python -m unittest discover -p 'test*.py", ["test_a"]),
+            (["py", "-m", "pytest"], ["test_a"]),
+        ):
+            with self.subTest(command=unfocused, tests=tests):
+                self.assertIsNone(check.focused_command(unfocused, tests))
+
+    def run_gate(self, direct_test):
+        self.write("src/pkg/__init__.py")
+        self.write("src/pkg/mod.py", "def add(a, b):\n    return a + b\n")
+        self.write(
+            "tests/test_direct.py",
+            "import unittest\nimport pkg.mod\n\n"
+            f"class Direct(unittest.TestCase):\n    def test_add(self):\n        {direct_test}\n",
+        )
+        self.write(
+            "tests/test_hidden.py",
+            "import importlib\nimport unittest\n\n"
+            "class Hidden(unittest.TestCase):\n    def test_add(self):\n"
+            "        add = importlib.import_module('pkg.mod').add\n"
+            "        self.assertEqual(5, add(2, 3))\n",
+        )
+        self.write(
+            "target/coverage/python/lcov.info",
+            "SF:src/pkg/mod.py\nDA:1,1\nDA:2,1\nend_of_record\n",
+        )
+        test_command = f"PYTHONPATH=src {shlex.quote(sys.executable)} -m unittest discover -s tests"
+        calls = []
+        run = check.CommandRunner.run
+
+        def record(runner, command, cwd, timeout):
+            calls.append((command, timeout))
+            return run(runner, command, cwd, timeout)
+
+        output = io.StringIO()
+        with patch.object(check.CommandRunner, "run", autospec=True, side_effect=record):
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                status = check.run(
+                    [
+                        "--root", str(self.root), "-s", "src", "--use-existing-coverage",
+                        "--test-command", test_command, "--max-workers", "1",
+                    ]
+                )
+        focused = test_command + " -f -k '*test_direct.*'"
+        self.assertEqual(0, status, output.getvalue())
+        self.assertIn("Mutation: 1 killed, 0 survived", output.getvalue())
+        self.assertIn((focused, None), calls)
+        mutant_runs = [command for command, timeout in calls if timeout is not None]
+        return mutant_runs, focused, test_command
+
+    def test_focused_kill_skips_the_full_command(self):
+        mutant_runs, focused, _full = self.run_gate("self.assertEqual(5, pkg.mod.add(2, 3))")
+        self.assertEqual([focused], mutant_runs)
+
+    def test_mutant_only_an_unselected_test_kills_is_still_killed(self):
+        mutant_runs, focused, full = self.run_gate("self.assertIsNotNone(pkg.mod.add(2, 3))")
+        self.assertEqual([focused, full], mutant_runs)
+
+    def test_mutation_count_warning_needs_verbose(self):
+        self.write("src/example.py", "def add(a, b):\n    return a" + " + b" * 51 + "\n")
+        self.write(
+            "target/coverage/python/lcov.info", "SF:src/example.py\nDA:1,1\nDA:2,1\nend_of_record\n"
+        )
+        for verbose in ([], ["--verbose"]):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                check.run(
+                    ["--root", str(self.root), "--use-existing-coverage",
+                     "--test-command", "exit 0", *verbose]
+                )
+            with self.subTest(verbose=verbose):
+                self.assertEqual(bool(verbose), "WARNING: 51 covered mutations" in output.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
