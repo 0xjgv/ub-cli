@@ -1,11 +1,13 @@
 import contextlib
 import io
+import os
 import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from ub_cli.signature import ed25519_verify, verify
+from ub_cli import update
 from ub_cli.update import run
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "minisign"
@@ -79,6 +81,43 @@ class UpdateCommandTests(unittest.TestCase):
         for argv in (["v0.1.0", "v0.2.0"], ["--force"]):
             with self.subTest(argv=argv):
                 self.assertEqual(2, self.invoke(argv)[0])
+
+    def test_help_prints_usage(self):
+        for flag in ("-h", "--help"):
+            with self.subTest(flag=flag):
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(0, run([flag]))
+                self.assertTrue(stdout.getvalue().startswith("Usage: ub update"))
+
+    def test_source_install_points_to_package_manager(self):
+        # A source install has no sys.frozen at all; leave it unset.
+        self.assertFalse(hasattr(sys, "frozen"))
+        with patch("ub_cli.update.subprocess.run") as installer:
+            status, error = self.invoke([])
+        installer.assert_not_called()
+        self.assertEqual(1, status)
+        self.assertIn("Python package manager", error)
+
+    def run_frozen(self, environment):
+        with patch.object(sys, "frozen", True, create=True), \
+                patch.object(sys, "executable", "/opt/ub/bin/ub"), \
+                patch.dict(os.environ, environment, clear=True), \
+                patch("ub_cli.update.subprocess.run") as installer:
+            installer.return_value.returncode = 7
+            self.assertEqual(7, self.invoke([])[0])
+        self.assertEqual(["sh", Path(update.__file__).with_name("install.sh")], installer.call_args.args[0])
+        env = installer.call_args.kwargs["env"]
+        self.assertEqual("1", env["PYINSTALLER_RESET_ENVIRONMENT"])
+        return env
+
+    def test_frozen_install_defaults_to_executable_directory(self):
+        env = self.run_frozen({"PATH": "/bin"})
+        self.assertEqual(str(Path("/opt/ub/bin/ub").resolve().parent), env["UB_INSTALL_DIR"])
+        self.assertEqual("/bin", env["PATH"])
+
+    def test_frozen_install_keeps_chosen_directory(self):
+        self.assertEqual("/custom", self.run_frozen({"UB_INSTALL_DIR": "/custom"})["UB_INSTALL_DIR"])
 
 
 if __name__ == "__main__":

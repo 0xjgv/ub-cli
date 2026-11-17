@@ -76,7 +76,8 @@ ub check --root .
 ```
 
 The first three commands forward arguments, output, and exit status to the
-corresponding engine. Use `ub COMMAND --help` for its options. Coverage and
+corresponding engine. Use `ub COMMAND --help` for its options; its usage line
+names `ub COMMAND` instead of the engine. Coverage and
 mutation runs use the target project's toolchain. Upstream coverage runners can
 install missing coverage tools. To read coverage already collected by your CI,
 use `ub check --use-existing-coverage`.
