@@ -418,10 +418,13 @@ def focused_command(command, tests: list[str]):
 
 
 def _focuser(root: Path, runner, override: str | None):
-    """Return a source file's focused commands that pass on the original code."""
+    """Return a source file's focused commands, one per test module, nearest and fastest first.
+
+    A module whose focused command fails on the original code is left out.
+    """
 
     graph = None
-    passed = {}
+    baselines = {}
 
     def focus(path: Path) -> list:
         nonlocal graph
@@ -431,15 +434,18 @@ def _focuser(root: Path, runner, override: str | None):
             graph = python_imports(root)
         command, directory = test_plan(root, path, "python", override)
         commands = []
-        for tests in affected_tests(graph, _module_name(path)):
-            focused = focused_command(command, tests)
-            if focused is None:
-                return []
-            key = (str(focused), str(directory))
-            if key not in passed:
-                passed[key] = runner.run(focused, directory, None).code == 0
-            if passed[key]:
-                commands.append(focused)
+        for tier in affected_tests(graph, _module_name(path)):
+            timed = []
+            for test in tier:
+                focused = focused_command(command, [test])
+                if focused is None:
+                    return []
+                key = (str(focused), str(directory))
+                if key not in baselines:
+                    baselines[key] = runner.run(focused, directory, None)
+                if baselines[key].code == 0:
+                    timed.append((baselines[key].seconds, focused))
+            commands += [focused for _seconds, focused in sorted(timed, key=lambda item: item[0])]
         return commands
 
     return focus
@@ -451,12 +457,14 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     incomplete = []
     focus = _focuser(root, runner, options.test_command)
     for path in files:
-        runner.focus = focus(path)
+        covered = _mutation_coverage(root, path, bundle)
+        # A file without covered lines runs no mutant, so its focus would only cost baselines.
+        runner.focus = focus(path) if covered else []
         result = mutate_file(
             path,
             root,
             runner=runner,
-            covered_lines=_mutation_coverage(root, path, bundle),
+            covered_lines=covered,
             ignore_coverage=False,
             mutate_all=True,
             lines=None,
