@@ -1,6 +1,8 @@
 import contextlib
 import io
+import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -8,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dryer.model import Entry
+from crapper.coverage import load_bundle
+from mutator.model import RunResult
 
 from ub_cli import check
 
@@ -38,21 +42,22 @@ class CheckAcceptanceTests(unittest.TestCase):
     def command(self, program):
         return f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}"
 
+    def arguments(self, test_program, coverage_arguments=None):
+        return [
+            "--root",
+            str(self.root),
+            *(coverage_arguments or ["--use-existing-coverage"]),
+            "--test-command",
+            self.command(test_program),
+            "--max-workers",
+            "1",
+        ]
+
     def run_check(self, test_program, coverage_arguments=None):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            status = check.run(
-                [
-                    "--root",
-                    str(self.root),
-                    *(coverage_arguments or ["--use-existing-coverage"]),
-                    "--test-command",
-                    self.command(test_program),
-                    "--max-workers",
-                    "1",
-                ]
-            )
+            status = check.run(self.arguments(test_program, coverage_arguments))
         self.assertEqual(
             self.original,
             (self.root / "src" / "example.py").read_text(encoding="utf-8"),
@@ -82,7 +87,7 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.coverage(hits=0)
         status, output = self.run_check("pass")
         self.assertEqual(1, status, output)
-        self.assertIn("uncovered", output.lower())
+        self.assertIn("has 0 surviving and 1 uncovered mutants", output)
 
     def test_failed_baseline_is_incomplete(self):
         self.coverage()
@@ -177,6 +182,246 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status, output)
         self.assertIn("baseline", output.lower())
 
+    def lcov(self, relative, hits, *, path="target/coverage/python/lcov.info"):
+        report = self.root / path
+        report.parent.mkdir(parents=True, exist_ok=True)
+        lines = len((self.root / relative).read_text(encoding="utf-8").splitlines())
+        report.write_text(
+            f"SF:{relative}\n"
+            + "".join(f"DA:{line},{hits}\n" for line in range(1, lines + 1))
+            + "end_of_record\n",
+            encoding="utf-8",
+        )
+        return report
+
+    def copy_command(self, source, destination):
+        return self.command(
+            "import os, shutil, sys; print('runner', 'noise'); "
+            "print('runner', 'warning', file=sys.stderr); "
+            f"os.makedirs(os.path.dirname({destination!r}), exist_ok=True); "
+            f"shutil.copyfile({str(source)!r}, {destination!r})"
+        )
+
+    def test_report_without_executed_lines_is_incomplete(self):
+        self.lcov("src/example.py", 0)
+        status, output = self.run_check("pass")
+        self.assertEqual(2, status, output)
+        self.assertIn("no executed lines", output)
+        self.assertNotIn("uncovered mutants", output)
+
+    def test_known_gate_failures_print_before_incomplete_coverage(self):
+        self.original = "def choose(a):\n" + "".join(
+            f"    if a == {value}:\n        return {value}\n"
+            for value in range(9)
+        ) + "    return 9\n"
+        (self.root / "src" / "example.py").write_text(self.original, encoding="utf-8")
+        (self.root / "src" / "other.py").write_text(
+            "def other(a):\n    if a:\n        return 1\n    if a is None:\n"
+            "        return 2\n    return 3\n",
+            encoding="utf-8",
+        )
+        self.coverage()
+        status, output = self.run_check("pass")
+        self.assertEqual(2, status, output)
+        self.assertIn("CRAP 10 >= 10 in example/choose", output)
+        self.assertIn("Missing coverage for src/other.py:1", output)
+        self.assertNotIn("other/other", output)
+
+    def test_unchanged_report_beside_a_fresh_one_is_ignored(self):
+        stale = self.lcov("src/example.py", 0, path="coverage/lcov.info")
+        before = stale.read_bytes()
+        fresh = self.root.parent / f"{self.root.name}-fresh.info"
+        self.addCleanup(fresh.unlink, missing_ok=True)
+        fresh.write_text(
+            "SF:src/example.py\nDA:1,1\nDA:2,1\nend_of_record\n", encoding="utf-8"
+        )
+        status, output = self.run_check(
+            "import runpy; add = runpy.run_path('src/example.py')['add']; "
+            "assert add(2, 3) == 5",
+            [
+                "--coverage-command",
+                self.copy_command(fresh, "target/coverage/python/lcov.info"),
+            ],
+        )
+        self.assertEqual(0, status, output)
+        self.assertEqual(before, stale.read_bytes())
+
+    def test_coverage_command_output_is_hidden_unless_it_fails(self):
+        fresh = self.root.parent / f"{self.root.name}-fresh.info"
+        self.addCleanup(fresh.unlink, missing_ok=True)
+        fresh.write_text(
+            "SF:src/example.py\nDA:1,1\nDA:2,1\nend_of_record\n", encoding="utf-8"
+        )
+        coverage = self.copy_command(fresh, "target/coverage/python/lcov.info")
+        program = (
+            "import runpy; add = runpy.run_path('src/example.py')['add']; "
+            "assert add(2, 3) == 5"
+        )
+        for verbose in (False, True):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; from ub_cli.check import run; sys.exit(run(sys.argv[1:]))",
+                    *self.arguments(program, ["--coverage-command", coverage]),
+                    *(["--verbose"] if verbose else []),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            output = completed.stdout + completed.stderr
+            self.assertEqual(0, completed.returncode, output)
+            self.assertEqual(verbose, "runner noise" in output, output)
+            self.assertEqual(verbose, "runner warning" in output, output)
+            self.assertIn("All ub-mode quality gates passed.", completed.stdout)
+
+        status, output = self.run_check(
+            program, ["--coverage-command", coverage + " && exit 3"]
+        )
+        self.assertEqual(2, status, output)
+        self.assertIn("runner noise", output)
+        self.assertIn("runner warning", output)
+
+    def test_coverage_output_explains_missing_coverage(self):
+        (self.root / "src" / "other.py").write_text("def other():\n    return 1\n")
+        fresh = self.lcov("src/example.py", 1, path="fresh.info")
+        status, output = self.run_check(
+            "pass",
+            ["--coverage-command", self.copy_command(fresh, "coverage/lcov.info")],
+        )
+        self.assertEqual(2, status, output)
+        self.assertIn("Missing coverage for src/other.py:1", output)
+        self.assertIn("runner noise", output)
+
+    def test_quietly_shows_output_when_the_call_raises(self):
+        def fail():
+            os.write(1, b"tool diagnostics\n")
+            raise RuntimeError("tool crashed")
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(RuntimeError):
+            check._quietly(fail)
+        self.assertEqual("tool diagnostics\n", stderr.getvalue())
+
+    def test_set_aside_hides_reports_and_keeps_newer_ones(self):
+        kept = self.lcov("src/example.py", 1, path="coverage/lcov.info")
+        replaced = self.lcov("src/example.py", 1)
+        before = kept.read_bytes()
+        with check._set_aside([kept, replaced]):
+            self.assertFalse(kept.exists() or replaced.exists())
+            replaced.write_text("newer\n", encoding="utf-8")
+        self.assertEqual(before, kept.read_bytes())
+        self.assertEqual("newer\n", replaced.read_text(encoding="utf-8"))
+        self.assertEqual([], list(self.root.rglob("*.ub-stale")))
+
+    def test_source_root_limits_the_checked_files(self):
+        (self.root / "scripts").mkdir()
+        (self.root / "scripts" / "tool.py").write_text(
+            "def tool():\n    return 1\n", encoding="utf-8"
+        )
+        self.coverage()
+        program = (
+            "import runpy; add = runpy.run_path('src/example.py')['add']; "
+            "assert add(2, 3) == 5"
+        )
+        status, output = self.run_check(program)
+        self.assertEqual(2, status, output)
+        status, output = self.run_check(program, ["--use-existing-coverage", "-s", "src"])
+        self.assertEqual(0, status, output)
+        for full_report in ("CRAP Report", "No duplicate candidates", "KILLED", "Total"):
+            self.assertNotIn(full_report, output)
+
+    def test_verbose_restores_the_full_reports(self):
+        self.coverage()
+        status, output = self.run_check(
+            "import runpy; add = runpy.run_path('src/example.py')['add']; "
+            "assert add(2, 3) == 5",
+            ["--use-existing-coverage", "--verbose"],
+        )
+        self.assertEqual(0, status, output)
+        self.assertIn("CRAP Report", output)
+        self.assertIn("KILLED", output)
+        self.assertIn("Function", output)
+
+    def test_skipped_or_failed_mutation_run_is_incomplete(self):
+        self.coverage()
+        for result in (
+            RunResult("src/example.py", [], [], skipped="file is not UTF-8"),
+            RunResult(
+                "src/example.py", [], [], baseline_failed=True, baseline_message="baseline broke"
+            ),
+        ):
+            with self.subTest(result=result):
+                with patch.object(check, "mutate_file", return_value=result):
+                    status, output = self.run_check("pass")
+                self.assertEqual(2, status, output)
+                self.assertIn(result.skipped or result.baseline_message, output)
+
+    def test_project_needs_a_supported_source_file(self):
+        (self.root / "src" / "example.py").unlink()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            status = check.run(["--root", str(self.root), "--use-existing-coverage"])
+        self.assertEqual(2, status)
+        self.assertIn("No supported source files found.", stderr.getvalue())
+        # crapper scores .js files that dryer skips, so either list is enough to continue.
+        (self.root / "src" / "lib.js").write_text("function f() {\n  return 1;\n}\n")
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            status = check.run(self.arguments("pass"))
+        self.assertEqual(2, status)
+        self.assertIn("Missing coverage for src/lib.js:1", stderr.getvalue())
+
+    def test_usage_errors_are_incomplete(self):
+        for arguments, message in (
+            (["--max-workers", "0"], "--max-workers requires a positive integer"),
+            (["--root", str(self.root / "absent")], "Project root is not a directory"),
+            (["--unknown"], "unrecognized arguments: --unknown"),
+        ):
+            with self.subTest(arguments=arguments):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    status = check.run(["--root", str(self.root), *arguments])
+                self.assertEqual(2, status)
+                self.assertIn(message, stderr.getvalue())
+
+    def test_report_states_cover_nested_go_and_java_reports(self):
+        expected = set()
+        for prefix in ("", "a/", "a/b/"):
+            for name in ("target/coverage/go/coverage.out", "target/site/jacoco/jacoco.xml"):
+                expected.add(self.root / prefix / name)
+        expected |= {self.root / "coverage.out", self.root / "target/coverage/coverage.out"}
+        for report in expected:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("data\n", encoding="utf-8")
+        self.assertEqual(expected, set(check._report_states(self.root, {"go", "java"})))
+
+    def test_report_states_keep_only_cloverage_html_files(self):
+        forms = self.root / "target" / "coverage" / "app" / "core.clj.html"
+        forms.parent.mkdir(parents=True)
+        forms.write_text("<p>3 forms covered</p>", encoding="utf-8")
+        (self.root / "target" / "coverage" / "index.html").write_text("<p>index</p>")
+        (self.root / "target" / "coverage" / "lib.html").mkdir()
+        self.assertEqual({forms}, set(check._report_states(self.root, {"clojure"})))
+
+    def test_go_mutation_coverage_keeps_only_hit_lines(self):
+        (self.root / "go.mod").write_text("module example.org/m\n\ngo 1.22\n", encoding="utf-8")
+        source = self.root / "add.go"
+        source.write_text(
+            "package calc\n\nfunc Add(a, b int) int {\n    return a + b\n}\n"
+            "func Sub(a, b int) int {\n    return a - b\n}\n",
+            encoding="utf-8",
+        )
+        report = self.root / "target" / "coverage" / "go" / "coverage.out"
+        report.parent.mkdir(parents=True)
+        report.write_text(
+            "mode: set\nexample.org/m/add.go:3.24,5.2 1 1\nexample.org/m/add.go:6.24,8.2 1 0\n",
+            encoding="utf-8",
+        )
+        bundle = load_bundle(self.root)
+        bundle.bind_sources(["add.go"])
+        self.assertEqual({3, 4, 5}, check._mutation_coverage(self.root, source, bundle))
+
     def test_go_module_coverage_path_matches_the_project_source(self):
         (self.root / "src" / "example.py").unlink()
         source = "package calc\n\nfunc Add(a, b int) int {\n    return a + b\n}\n"
@@ -209,7 +454,7 @@ class CheckAcceptanceTests(unittest.TestCase):
             )
         output = stdout.getvalue() + stderr.getvalue()
         self.assertEqual(0, status, output)
-        self.assertIn("KILLED", output)
+        self.assertIn("1 killed", output)
         self.assertEqual(source, (self.root / "add.go").read_text(encoding="utf-8"))
 
 
