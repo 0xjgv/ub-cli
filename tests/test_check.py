@@ -557,16 +557,25 @@ class FocusTests(unittest.TestCase):
         self.write("tests/helper.py", "import pkg.mod\n")
         graph = check.python_imports(self.root)
         self.assertEqual(
-            ["test_direct", "test_from", "test_indirect", "test_lazy"],
+            [["test_direct", "test_from", "test_lazy"], ["test_indirect"]],
             check.affected_tests(graph, "pkg.mod"),
         )
 
-    def test_affected_tests_reach_importers_listed_before_their_imports(self):
+    def test_affected_tests_drop_distances_without_tests(self):
         graph = {
             Path("tests/test_late.py"): ("test_late", {"pkg.user"}),
             Path("src/pkg/user.py"): ("pkg.user", {"pkg.mod"}),
         }
-        self.assertEqual(["test_late"], check.affected_tests(graph, "pkg.mod"))
+        self.assertEqual([["test_late"]], check.affected_tests(graph, "pkg.mod"))
+
+    def test_focused_runner_stops_at_the_first_failing_focus(self):
+        runner = check.FocusedRunner()
+        runner.focus = ["exit 0", "exit 3", "exit 4"]
+        self.assertEqual(3, runner.run("exit 0", self.root, 5).code)
+        runner.focus = ["exit 0"]
+        self.assertEqual(5, runner.run("exit 5", self.root, 5).code)
+        runner.focus = ["exit 3"]
+        self.assertEqual(0, runner.run("exit 0", self.root, None).code)
 
     def test_focused_command_narrows_only_a_lone_unittest_discover(self):
         command = "uv run python -m unittest discover -s tests -q"
@@ -581,6 +590,7 @@ class FocusTests(unittest.TestCase):
         for unfocused, tests in (
             (command, []),
             (command + " -k slow", ["test_a"]),
+            (command + " '-k' slow", ["test_a"]),
             (command + " 2>&1", ["test_a"]),
             ("cd tests && python -m unittest discover", ["test_a"]),
             ("python -m pytest", ["test_a"]),

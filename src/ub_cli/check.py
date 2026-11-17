@@ -284,19 +284,20 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
 
 
 class FocusedRunner(CommandRunner):
-    """Run a mutant against the tests that import its module, then the full command.
+    """Run a mutant against the tests nearest its module, then the full command.
 
-    A focused failure is a kill. A focused pass reruns the full command, so a
-    mutant only some other test kills is still killed and no survivor is
-    reported that the full command would not report.
+    Each focused command runs in turn; a failure is a kill. When every focused
+    command passes, the full command reruns, so a mutant only some other test
+    kills is still killed and no survivor is reported that the full command
+    would not report.
     """
 
-    focus = None
+    focus = ()
 
     def run(self, command, cwd, timeout):
         # Baselines run without a timeout; only mutant runs have one.
-        if self.focus is not None and timeout is not None:
-            result = super().run(self.focus, cwd, timeout)
+        for focused in self.focus if timeout is not None else ():
+            result = super().run(focused, cwd, timeout)
             if result.timed_out or result.code != 0:
                 return result
         return super().run(command, cwd, timeout)
@@ -345,28 +346,30 @@ def python_imports(root: Path) -> dict[Path, tuple[str, set[str]]]:
     return graph
 
 
-def affected_tests(graph, module: str) -> list[str]:
-    """The test*.py module stems that import `module`, directly or through other modules."""
+def affected_tests(graph, module: str) -> list[list[str]]:
+    """The test*.py module stems that import `module`, grouped by import distance, nearest first."""
 
     # shortcut: import statements only; import_module and subprocess imports are missed,
     # which costs a full-command rerun, never a verdict.
     reached = {module}
-    grew = True
-    while grew:
-        grew = False
-        for name, imported in graph.values():
-            if name not in reached and any(
-                item == target or item.startswith(target + ".")
-                for item in imported
-                for target in reached
-            ):
-                reached.add(name)
-                grew = True
-    return sorted(
-        path.stem
-        for path, (name, _) in graph.items()
-        if name in reached and name != module and fnmatch.fnmatch(path.name, "test*.py")
-    )
+    frontier = {module}
+    tiers = []
+    while frontier:
+        frontier = {
+            name
+            for name, imported in graph.values()
+            if name not in reached
+            and any(item == target or item.startswith(target + ".") for item in imported for target in frontier)
+        }
+        reached |= frontier
+        tiers.append(
+            sorted(
+                path.stem
+                for path, (name, _) in graph.items()
+                if name in frontier and fnmatch.fnmatch(path.name, "test*.py")
+            )
+        )
+    return [tier for tier in tiers if tier]
 
 
 def focused_command(command, tests: list[str]):
@@ -380,7 +383,6 @@ def focused_command(command, tests: list[str]):
         words = command
     else:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
         try:
             words = list(lexer)
         except ValueError:
@@ -394,25 +396,29 @@ def focused_command(command, tests: list[str]):
 
 
 def _focuser(root: Path, runner, override: str | None):
-    """Return the focused command for a source file, once it passed on the original code."""
+    """Return a source file's focused commands that pass on the original code."""
 
     graph = None
     passed = {}
 
-    def focus(path: Path):
+    def focus(path: Path) -> list:
         nonlocal graph
         if language_of(path) != "python":
-            return None
+            return []
         if graph is None:
             graph = python_imports(root)
         command, directory = test_plan(root, path, "python", override)
-        focused = focused_command(command, affected_tests(graph, _module_name(path)))
-        if focused is None:
-            return None
-        key = (str(focused), str(directory))
-        if key not in passed:
-            passed[key] = runner.run(focused, directory, None).code == 0
-        return focused if passed[key] else None
+        commands = []
+        for tests in affected_tests(graph, _module_name(path)):
+            focused = focused_command(command, tests)
+            if focused is None:
+                return []
+            key = (str(focused), str(directory))
+            if key not in passed:
+                passed[key] = runner.run(focused, directory, None).code == 0
+            if passed[key]:
+                commands.append(focused)
+        return commands
 
     return focus
 
