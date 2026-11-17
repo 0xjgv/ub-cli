@@ -131,7 +131,8 @@ the mutated copy.
 
 Run `make test` for the test suite and `make build-native` to produce the
 archive for the current machine under `dist/`. `make build` builds the Python
-wheel.
+wheel. The CI workflow runs `make test` and the vendored-tree check below on
+every pull request and every push to `main`.
 
 [Crapper](https://github.com/unclebob/crapper),
 [Dryer](https://github.com/unclebob/dryer), and
@@ -139,8 +140,8 @@ wheel.
 `src/ub_cli/vendor` at the commits in `src/ub_cli/vendor/VENDORED`, with their
 imports rewritten to `ub_cli.vendor`. Never edit that directory by hand.
 `make check-upstreams` compares the pins with upstream and prints the update
-command, `python scripts/vendor.py NAME COMMIT`. The Release workflow fails when
-the directory differs from what `scripts/vendor.py` produces.
+command, `python scripts/vendor.py NAME COMMIT`. The CI and Release workflows
+fail when the directory differs from what `scripts/vendor.py` produces.
 
 `make release [BUMP=patch|minor|major]` bumps the version in `pyproject.toml`
 on a clean, up-to-date `main`, tags it, and pushes both. Rerunning it after an
