@@ -75,12 +75,25 @@ ub mutate --scan --no-coverage
 ub check --root .
 ```
 
-The first three commands forward arguments, output, and exit status to the
+The first three commands forward arguments and exit status to the
 corresponding engine. Use `ub COMMAND --help` for its options; its usage line
 names `ub COMMAND` instead of the engine. Coverage and
 mutation runs use the target project's toolchain. Upstream coverage runners can
 install missing coverage tools. To read coverage already collected by your CI,
-use `ub check --use-existing-coverage`.
+use `ub check --use-existing-coverage` or `ub crap --use-existing-coverage`.
+
+By default each command prints a summary line and the items that need work:
+`ub crap` lists functions with CRAP ≥ 10, or above `--threshold` (complexity
+≥ 10 with `--no-coverage`), `ub dry` one line per duplicate pair, and
+`ub mutate` the surviving and uncovered mutants. `ub crap` and `ub dry` show
+the first 10 items; `ub mutate --scan` prints one line per file with sites.
+Coverage output stays hidden unless a coverage command fails. Pass `--verbose`
+for the engine's full report, every mutant, and the coverage output.
+
+ub exits 2 with one cause line where the engine would report nothing useful:
+when a whole-project `ub crap` reads coverage in which no analyzed function
+ran a line, and when a path or filter argument matches no source file (except
+with `--changed`). A bare run on a project without source files still exits 0.
 
 ## Combined gate
 
@@ -101,7 +114,8 @@ mutant log, and to stream the coverage command's output.
 | 2 | The check was incomplete, including missing coverage, coverage with no executed lines, a failing baseline, or a usage error. |
 
 The tools write their native reports to `.metrics/crap.edn`, `.metrics/dry.edn`,
-and `.metrics/mutate/`. Standalone commands retain their upstream exit codes.
+and `.metrics/mutate/`. Standalone commands retain their upstream exit codes,
+plus the status 2 cases above.
 
 To use project-specific commands, pass `--coverage-command '...'` and
 `--test-command '...'`. The coverage command must produce a report in an
