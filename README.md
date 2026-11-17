@@ -64,6 +64,85 @@ The installer works offline. It includes the upstream MIT license and a copy of
 the skill adapted to call the three `ub` subcommands.
 [Upstream revision](https://github.com/unclebob/ub-mode/tree/3da62bf3fcfd2034de41f30d920d2739e566171f)
 
+## Set up a repository
+
+Run from the repository root:
+
+```sh
+ub init -s src
+./.ub/check
+```
+
+Use the source directory for your project, repeat `-s` for multiple trees, or
+omit it to check the whole project. `ub init` creates an executable `.ub/check`
+that runs `ub check`, adds a managed instruction block to `AGENTS.md` and
+`CLAUDE.md`, and ignores generated metrics and mutation-worker directories.
+It does not run tests or install hooks. Review and commit these files so new
+agent sessions and teammates use the same workflow. Other instructions are
+preserved, including in-repository symlinks between instruction files.
+
+For custom runners, pass `--coverage-command`, `--test-command`, and optionally
+`--max-workers` to `ub init`, as you would to `ub check`. The commands are saved
+as literal arguments in `.ub/check`; coverage must use a supported report
+location. The script locates its project root even when invoked from elsewhere.
+Edit `.ub/check` to change the commands later. Repeating `ub init` preserves
+that script; conflicting explicit command options fail instead of replacing it.
+`--root PATH` initializes a different project directory.
+
+Installing the personal skill makes the workflow discoverable. The repository's
+instruction files remind agents to run `./.ub/check` after production-code or
+test changes and report any unresolved failures. CI should run the same command
+after installing `ub` and the project's test and coverage tools. Start with a
+reporting job to understand findings and runtime, then make the job required in
+your branch rules. `ub init` does not change CI configuration or branch rules.
+
+## Install hooks
+
+After initializing and validating the check:
+
+```sh
+ub hooks install                        # Git pre-push
+ub hooks install --target codex          # .codex/hooks.json, Stop event
+ub hooks install --target claude         # .claude/settings.json, Stop event
+```
+
+Repeat `--target` to select several hooks. Installation is explicit and repeatable;
+`ub skill install` does not install hooks. Git must be available, and `ub` must
+be on the PATH used by Git and your agent. Installation from a subdirectory
+uses the Git worktree root. `--root PATH` selects another repository.
+
+The Git hook runs `.ub/check` first, then the existing shell hook, preserving its
+path, arguments, stdin, and failing exit status. A copy of the original is kept
+beside it as `pre-push.ub-original`. Git's configured `core.hooksPath`
+is respected when it is inside the repository; external shared directories and
+symlinked or non-shell hooks require manual integration. Hooks in Git's common directory
+also apply to linked worktrees: each must contain `.ub/check`. Git hooks are
+local to the clone and need installing in each clone.
+
+Agent installation preserves other settings and hook handlers. Restart the agent
+and inspect `/hooks`; Codex requires reviewing and trusting the new hooks.
+The hooks use the [Codex](https://learn.chatgpt.com/docs/hooks) and
+[Claude Code](https://code.claude.com/docs/en/hooks) Stop-event contracts. Each
+completion runs the configured check, even on turns without edits, so select a
+scope and test command whose runtime fits interactive use. The default check
+timeout is 120 seconds; set `ub hooks install --target codex --timeout 300` (or
+`--target claude`) for a longer budget. Edit an existing handler to change it.
+On timeout, the check and its descendants (including detached test sessions)
+are terminated and the agent receives a failure. A missing `ub` also blocks
+completion. Cancellation uses the system's `ps` command on macOS and Linux.
+
+Failed checks return a blocking decision with the diagnostic tail. A repeated
+Stop continuation (`stop_hook_active`) skips the check to avoid an endless loop
+and asks the agent to report unresolved failures. This is feedback, not proof
+that the check passed: required CI remains the final gate. Host-level hook
+disablement or timeout may prevent enforcement; review the agent's hook status.
+
+To remove a Git hook, delete its `# ub:begin` / `# ub:end` block. Alternatively,
+if the hook has no subsequent edits, restore `pre-push.ub-original` (or remove
+the generated hook if there was no original). To remove
+an agent hook, delete only the `ub hooks run stop ...` handler from its JSON file.
+Keep other hooks and settings.
+
 ## Usage
 
 Run these commands in the project you want to analyze.

@@ -54,7 +54,7 @@ class UpstreamParityTests(unittest.TestCase):
     def test_top_level_help_names_all_commands(self):
         status, output, _ = invoke(run, ["--help"])
         self.assertEqual(0, status)
-        for command in ("crap", "dry", "mutate", "check"):
+        for command in ("crap", "dry", "mutate", "check", "init", "hooks", "skill", "update"):
             self.assertIn(command, output)
 
     def test_version_prints_package_version(self):

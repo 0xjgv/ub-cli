@@ -8,6 +8,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 unset PYTHONPATH
+PATH="$(dirname "$ub"):$PATH"
+export PATH
 HOME="$work/home" "$ub" skill install
 cmp "$work/home/.agents/skills/ub-mode/SKILL.md" "$work/home/.claude/skills/ub-mode/SKILL.md"
 grep -F 'MIT License' "$work/home/.agents/skills/ub-mode/LICENSE" >/dev/null
@@ -36,12 +38,25 @@ grep -F 'Robert C. Martin' notices.txt >/dev/null
 "$ub" mutate --scan --no-coverage
 "$ub" check --use-existing-coverage --max-workers 1
 grep -q ':killed 1' .metrics/mutate/arithmetic.edn
+# Exercise setup and hooks through the packaged executable, including a real check.
+git init -q
+"$ub" init --coverage-command 'touch target/coverage/python/lcov.info' --max-workers 1
+./.ub/check
+"$ub" hooks install --target git --target codex --target claude
+.git/hooks/pre-push origin unused </dev/null
+printf '{"cwd":"%s","stop_hook_active":false}\n' "$work" | "$ub" hooks run stop > hook-result.json
+grep -qx '{}' hook-result.json
 # A test-only change must turn the previously killed mutant into a survivor.
 printf '%s\n' 'import unittest' 'class Tests(unittest.TestCase):' '    def test_weak(self): pass' > test_arithmetic.py
 status=0
 "$ub" check --use-existing-coverage --max-workers 1 || status=$?
 [ "$status" -eq 1 ]
 grep -q ':survived 1' .metrics/mutate/arithmetic.edn
+status=0
+.git/hooks/pre-push origin unused </dev/null || status=$?
+[ "$status" -eq 1 ]
+printf '{"cwd":"%s","stop_hook_active":false}\n' "$work" | "$ub" hooks run stop > hook-result.json
+grep -q '"decision": "block"' hook-result.json
 
 # Exercise the packaged parsers without needing the projects' build toolchains.
 mkdir languages
@@ -53,7 +68,7 @@ printf '%s\n' 'export function sumJs(a, b) { return a+b; }' > calc.js
 printf '%s\n' 'export function sumTs(a: number, b: number) { return a+b; }' > calc.ts
 printf '%s\n' 'export function viewTsx() { return <div/>; }' > view.tsx
 printf '%s\n' '(ns calc)' '(defn sum-clj [a b] (+ a b))' > calc.clj
-"$ub" crap --no-coverage > report.txt
+"$ub" crap --no-coverage --verbose > report.txt
 for name in SumGo sumJava sum_rust sumJs sumTs viewTsx sum-clj; do
     grep -F "$name" report.txt >/dev/null
 done

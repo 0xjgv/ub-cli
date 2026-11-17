@@ -1,9 +1,10 @@
 ---
 name: ub-mode
 description: >
-  Follow the reduced principles when writing or changing code. Every change
-  follows First Make it Work, then Then Make it Right, then Follow Practice.
-  Use when the user runs /ub-mode or asks for the reduced principles.
+  Use the ub CLI for code complexity and coverage (ub crap), duplication
+  (ub dry), and mutation testing (ub mutate). Use when working in a repository
+  initialized with ub init, running UB quality checks, or when the user invokes
+  ub-mode or asks for the reduced principles.
 ---
 
 # ub-mode
@@ -12,6 +13,25 @@ Every time you are asked to make a change follow:
 * First Make it Work.
 * Then Make it Right.
 * Follow Practice
+
+## Repository workflow
+
+* Read the repository's AGENTS.md or CLAUDE.md and use its configured checks.
+* When `.ub/check` exists, run `./.ub/check` from the repository root after
+  changing production code or tests, before declaring completion. It supplies
+  the repository's scope, coverage command, and test command to `ub check`.
+* Use focused `ub crap`, `ub dry`, and `ub mutate` commands while iterating.
+  Prefer the repository's configured scope over a whole-project scan. Pass
+  `--use-existing-coverage` only when coverage is current for the code under test.
+* `--changed` selects working-tree changes from git status, not a PR's commits.
+* For requested setup, `ub init` creates the shared check and persistent agent
+  instructions. `ub hooks install` adds a Git pre-push hook; `--target codex`
+  or `--target claude` adds a completion hook. Use `--help` for project options.
+* A skill describes the workflow; installed hooks and required CI checks enforce
+  it. Do not weaken checks or bypass hooks. Report remaining failures, missing
+  tools, and checks that could not finish without claiming success.
+* Keep fixes within the requested task. This skill does not authorize unrelated
+  cleanup, commits, or publication.
 
 # First Make it Work
 
@@ -147,6 +167,6 @@ Every time you are asked to make a change follow:
 
 ## Commit and Push
 
-* Commit often, in small ordered commits.
-* Each commit says why, what changed, and how you proved it.
-* Push to the main line at the end.
+* Commit or push only when authorized by the user and repository policy.
+* When committing, use small ordered commits that say why, what changed, and how you proved it.
+* Follow the repository's branch and review policy.
