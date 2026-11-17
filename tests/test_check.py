@@ -82,13 +82,13 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.coverage()
         status, output = self.run_check("pass")
         self.assertEqual(1, status, output)
-        self.assertIn("surviv", output.lower())
+        self.assertIn("\n  src/example.py:2 survived + -> -\n", output)
 
     def test_uncovered_site_fails_even_without_survivors(self):
         self.coverage(hits=0)
         status, output = self.run_check("pass")
         self.assertEqual(1, status, output)
-        self.assertIn("has 0 surviving and 1 uncovered mutants", output)
+        self.assertIn("\n  src/example.py:2 uncovered + -> -\n", output)
 
     def test_failed_baseline_is_incomplete(self):
         self.coverage()
@@ -136,12 +136,12 @@ class CheckAcceptanceTests(unittest.TestCase):
             "assert [choose(value) for value in range(10)] == list(range(10))"
         )
         self.assertEqual(1, status, output)
-        self.assertIn("CRAP 10.0 >= 10", output)
+        self.assertIn("\n  10.0 CRAP, 10 CC, 100% covered: example/choose\n", output)
         metrics = (self.root / ".metrics" / "crap.edn").read_text(encoding="utf-8")
         self.assertIn(":complexity 10", metrics)
         self.assertIn(":coverage 100.0", metrics)
         self.assertIn(":crap 10.0", metrics)
-        self.assertNotIn("surviving and", output)
+        self.assertNotRegex(output, r"\.py:\d+ (survived|uncovered) ")
 
     def test_combined_command_uses_point_eight_duplication_threshold(self):
         self.coverage()
@@ -207,8 +207,15 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.lcov("src/example.py", 0)
         status, output = self.run_check("pass")
         self.assertEqual(2, status, output)
-        self.assertIn("no executed lines", output)
-        self.assertNotIn("uncovered mutants", output)
+        self.assertIn("Did the coverage command run the tests?", output)
+        self.assertNotIn("Mutation:", output)
+
+    def test_report_without_executed_lines_names_the_coverage_command(self):
+        fresh = self.lcov("src/example.py", 0, path="fresh.info")
+        command = self.copy_command(fresh, "target/coverage/python/lcov.info")
+        status, output = self.run_check("pass", ["--coverage-command", command])
+        self.assertEqual(2, status, output)
+        self.assertIn(f"Did `{command}` run the tests?", output)
 
     def test_known_gate_failures_print_before_incomplete_coverage(self):
         self.original = "def choose(a):\n" + "".join(
@@ -224,7 +231,7 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.coverage()
         status, output = self.run_check("pass")
         self.assertEqual(2, status, output)
-        self.assertIn("CRAP 10.0 >= 10 in example/choose", output)
+        self.assertIn("10.0 CRAP, 10 CC, 100% covered: example/choose", output)
         self.assertIn("Missing coverage for src/other.py:1", output)
         self.assertNotIn("other/other", output)
 
@@ -315,11 +322,22 @@ class CheckAcceptanceTests(unittest.TestCase):
 
     def test_crap_failures_print_one_decimal(self):
         entries = [
-            SimpleNamespace(crap=35.2693, namespace="pkg", name="hot"),
-            SimpleNamespace(crap=9.99, namespace="pkg", name="cool"),
-            SimpleNamespace(crap=None, namespace="pkg", name="unknown"),
+            SimpleNamespace(crap=35.2693, complexity=7, coverage=49.6, namespace="pkg", name="hot"),
+            SimpleNamespace(crap=9.99, complexity=9, coverage=100.0, namespace="pkg", name="cool"),
+            SimpleNamespace(crap=None, complexity=1, coverage=None, namespace="pkg", name="unknown"),
         ]
-        self.assertEqual(["CRAP 35.3 >= 10 in pkg/hot"], check._crap_failures(entries))
+        self.assertEqual(["35.3 CRAP, 7 CC, 50% covered: pkg/hot"], check._crap_failures(entries))
+
+    def test_mutation_failures_list_each_unkilled_mutant(self):
+        sites = [
+            SimpleNamespace(mutation_id=key, file="src/a.py", line=line, description="> -> >=")
+            for key, line in (("k", 1), ("s", 2), ("u", 3), ("none", 4))
+        ]
+        result = SimpleNamespace(sites=sites, statuses={"k": "killed", "s": "survived", "u": "uncovered"})
+        self.assertEqual(
+            ["src/a.py:2 survived > -> >=", "src/a.py:3 uncovered > -> >=", "src/a.py:4 survived > -> >="],
+            check._mutation_failures([result]),
+        )
 
     def test_quietly_shows_output_when_the_call_raises(self):
         def fail():
