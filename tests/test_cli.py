@@ -4,8 +4,9 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from ub_cli.cli import run
+from ub_cli.cli import main, run
 
 
 def invoke(entrypoint, arguments):
@@ -35,15 +36,14 @@ class UpstreamParityTests(unittest.TestCase):
                     unified = invoke(run, [command, *arguments])
                     self.assertEqual(upstream, unified)
 
-    def test_subcommands_preserve_upstream_help(self):
-        for command, module in (
-            ("crap", "crapper.cli"),
-            ("dry", "dryer.cli"),
-            ("mutate", "mutator.cli"),
-        ):
+    def test_subcommand_help_names_the_ub_command(self):
+        for command, engine in (("crap", "crapper"), ("dry", "dryer"), ("mutate", "mutator")):
             with self.subTest(command=command):
-                upstream = invoke(importlib.import_module(module).run, ["--help"])
-                self.assertEqual(upstream, invoke(run, [command, "--help"]))
+                status, output, error = invoke(run, [command, "--help"])
+                upstream = invoke(importlib.import_module(f"{engine}.cli").run, ["--help"])[1]
+                self.assertEqual((0, ""), (status, error))
+                self.assertTrue(output.startswith(f"Usage: ub {command} [options]"), output)
+                self.assertEqual(upstream.splitlines()[1:], output.splitlines()[1:])
 
     def test_top_level_help_names_all_commands(self):
         status, output, _ = invoke(run, ["--help"])
@@ -51,10 +51,33 @@ class UpstreamParityTests(unittest.TestCase):
         for command in ("crap", "dry", "mutate", "check"):
             self.assertIn(command, output)
 
-    def test_unknown_command_fails(self):
-        status, _, error = invoke(run, ["unknown"])
-        self.assertNotEqual(0, status)
-        self.assertIn("unknown", error)
+    def test_version_prints_package_version(self):
+        status, output, _ = invoke(run, ["--version"])
+        self.assertEqual(0, status)
+        self.assertRegex(output, r"^ub \d")
+
+    def test_unknown_command_fails_with_one_hint(self):
+        self.assertEqual(
+            (2, "", "Unknown command: unknown\nRun ub --help for usage.\n"),
+            invoke(run, ["unknown"]),
+        )
+
+    def test_licenses_outside_native_build_explains_itself(self):
+        status, output, error = invoke(run, ["--licenses"])
+        self.assertEqual((1, ""), (status, output))
+        self.assertEqual(1, error.count("\n"))
+        self.assertIn("native build", error)
+
+    def test_main_passes_arguments_after_program_name(self):
+        output = io.StringIO()
+        with (
+            patch("sys.argv", ["ub", "--version"]),
+            contextlib.redirect_stdout(output),
+            self.assertRaises(SystemExit) as exit,
+        ):
+            main()
+        self.assertEqual(0, exit.exception.code)
+        self.assertTrue(output.getvalue().startswith("ub "))
 
 
 if __name__ == "__main__":

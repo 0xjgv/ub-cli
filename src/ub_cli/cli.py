@@ -1,7 +1,8 @@
 """Dispatch upstream commands without interpreting their flags or exit codes."""
 
-import sys
+from importlib import import_module
 from importlib.metadata import version
+import sys
 
 HELP = """Usage: ub COMMAND [options]
 
@@ -16,6 +17,8 @@ Run ub --version to print the installed version.
 Run ub COMMAND --help for command-specific options.
 """
 
+ENGINES = {"crap": "crapper", "dry": "dryer", "mutate": "mutator"}
+
 
 def run(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help"):
@@ -26,13 +29,21 @@ def run(argv: list[str]) -> int:
         print(f"ub {version('ub-cli')}")
         return 0
 
+    if argv == ["--licenses"]:
+        # The native entry point answers --licenses before reaching this module.
+        print(
+            "ub --licenses needs the native build; "
+            "pip and uv installs keep each license in the package metadata.",
+            file=sys.stderr,
+        )
+        return 1
+
     command, *args = argv
-    if command == "crap":
-        from crapper.cli import run as execute
-    elif command == "dry":
-        from dryer.cli import run as execute
-    elif command == "mutate":
-        from mutator.cli import run as execute
+    if command in ENGINES:
+        engine = import_module(f"{ENGINES[command]}.cli")
+        # Upstream help names the engine; name the command the user typed instead.
+        engine.HELP = engine.HELP.replace(f"Usage: {ENGINES[command]} ", f"Usage: ub {command} ", 1)
+        execute = engine.run
     elif command == "update":
         from ub_cli.update import run as execute
     elif command == "skill":
@@ -40,7 +51,7 @@ def run(argv: list[str]) -> int:
     elif command == "check":
         from ub_cli.check import run as execute
     else:
-        print(f"Unknown command: {command}\n{HELP}", file=sys.stderr, end="")
+        print(f"Unknown command: {command}\nRun ub --help for usage.", file=sys.stderr)
         return 2
     return execute(args)
 
