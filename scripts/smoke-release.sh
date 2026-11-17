@@ -3,6 +3,7 @@
 set -eu
 ub=${1:?usage: sh scripts/smoke-release.sh /absolute/path/to/ub}
 case "$ub" in /*) ;; *) echo "Expected an absolute executable path" >&2; exit 2 ;; esac
+fixtures=$(CDPATH='' cd -- "$(dirname "$0")/../tests/fixtures/minisign" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
@@ -25,6 +26,8 @@ PY
 mkdir -p target/coverage/python
 printf '%s\n' SF:arithmetic.py DA:1,1 DA:2,1 end_of_record > target/coverage/python/lcov.info
 "$ub" --version
+"$ub" update --verify-signature "$(sed -n 2p "$fixtures/key.pub")" \
+    "$fixtures/checksums.txt" "$fixtures/checksums.txt.minisig"
 "$ub" --licenses > notices.txt
 grep -F 'BSD Zero Clause License' notices.txt >/dev/null
 grep -F 'Robert C. Martin' notices.txt >/dev/null

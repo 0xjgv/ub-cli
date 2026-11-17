@@ -1,14 +1,34 @@
+import base64
 import hashlib
 import io
 import os
+import re
+import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
 
 INSTALLER = Path(__file__).resolve().parents[1] / "install.sh"
+SIGNING_KEY = Ed25519PrivateKey.generate()
+KEY_ID = b"ubtest01"
+PUBLIC_KEY = base64.b64encode(
+    b"Ed" + KEY_ID + SIGNING_KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+).decode()
+
+
+def minisign(message: bytes, comment: str = "ub test") -> str:
+    """Sign like `minisign -S`: prehashed signature plus a signed trusted comment."""
+    signature = SIGNING_KEY.sign(hashlib.blake2b(message).digest())
+    blob = base64.b64encode(b"ED" + KEY_ID + signature).decode()
+    signed_comment = base64.b64encode(SIGNING_KEY.sign(signature + comment.encode())).decode()
+    return f"untrusted comment: test\n{blob}\ntrusted comment: {comment}\n{signed_comment}\n"
 
 
 class InstallerTests(unittest.TestCase):
@@ -20,6 +40,16 @@ class InstallerTests(unittest.TestCase):
         self.install = self.root / "bin"
         self.commands = self.root / "commands"
         self.commands.mkdir()
+        # The release key is replaced by a test key the tests can sign with.
+        self.installer = self.root / "install.sh"
+        self.installer.write_text(
+            re.sub(r"(?m)^PUBLIC_KEY=.*$", f"PUBLIC_KEY={PUBLIC_KEY}", INSTALLER.read_text())
+        )
+        self.verifier = self.commands / "ub-verifier"
+        self.verifier.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" -c '
+            "'import sys; from ub_cli.cli import run; sys.exit(run(sys.argv[1:]))' \"$@\"\n"
+        )
         (self.commands / "uname").write_text(
             '#!/bin/sh\ncase $1 in -s) echo "$TEST_OS";; -m) echo "$TEST_ARCH";; esac\n'
         )
@@ -50,11 +80,12 @@ class InstallerTests(unittest.TestCase):
                 output.addfile(member, io.BytesIO(payload))
             checksums.append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
         (location / "checksums.txt").write_text("".join(checksums))
+        (location / "checksums.txt.minisig").write_text(minisign((location / "checksums.txt").read_bytes()))
         return location
 
     def run_install(self, **overrides):
         return subprocess.run(
-            ["sh", str(INSTALLER)], env=self.environment | overrides,
+            ["sh", str(self.installer)], env=self.environment | overrides,
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
@@ -84,6 +115,38 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("already up to date: ub 0.1.0", result.stdout)
         self.assertEqual(original, (self.install / "ub").read_bytes())
 
+    def test_signature_is_required_by_the_verifier_and_minisign(self):
+        modes = {"ub update": {"UB_SIGNATURE_VERIFIER": str(self.verifier)}}
+        if shutil.which("minisign", path=self.environment["PATH"]):
+            modes["minisign"] = {}
+        for mode, overrides in modes.items():
+            with self.subTest(mode=mode):
+                location = self.release()
+                checksums = location / "checksums.txt"
+                result = self.run_install(**overrides)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertNotIn("not verified", result.stderr)
+                (self.install / "ub").unlink()
+                checksums.write_text(checksums.read_text() + "\n")
+                tampered = self.run_install(**overrides)
+                self.assertNotEqual(0, tampered.returncode)
+                self.assertIn("invalid signature", tampered.stderr)
+                (location / "checksums.txt.minisig").unlink()
+                unsigned = self.run_install(**overrides)
+                self.assertNotEqual(0, unsigned.returncode)
+                self.assertIn("checksums.txt.minisig", unsigned.stderr)
+                self.assertFalse((self.install / "ub").exists())
+
+    def test_installs_without_minisign_after_a_warning(self):
+        self.release()
+        without_minisign = os.pathsep.join(
+            entry for entry in self.environment["PATH"].split(os.pathsep)
+            if not (Path(entry) / "minisign").exists()
+        )
+        result = self.run_install(PATH=without_minisign)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("signature not verified", result.stderr)
+
     def test_version_can_be_pinned_with_or_without_v_prefix(self):
         self.release("0.1.0", pinned=True)
         for value in ("0.1.0", "v0.1.0"):
@@ -105,9 +168,11 @@ class InstallerTests(unittest.TestCase):
                 all_checksums = (location / "checksums.txt").read_text()
                 selected = next(line for line in all_checksums.splitlines(True) if platform in line)
                 (location / "checksums.txt").write_text(selected)
+                (location / "checksums.txt.minisig").write_text(minisign(selected.encode()))
                 result = self.run_install(TEST_OS=system, TEST_ARCH=machine, TEST_ROSETTA=rosetta)
                 self.assertEqual(0, result.returncode, result.stderr)
                 (location / "checksums.txt").write_text(all_checksums)
+                (location / "checksums.txt.minisig").write_text(minisign(all_checksums.encode()))
 
     def test_checksum_failure_preserves_installed_binary(self):
         self.release()

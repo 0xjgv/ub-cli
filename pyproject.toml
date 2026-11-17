@@ -23,6 +23,7 @@ keywords = [
     "python",
 ]
 dependencies = [
+    "cryptography==50.0.2",
     "tree-sitter==0.26.0",
     "tree-sitter-language-pack==1.22.1",
     "crapper @ git+https://github.com/unclebob/crapper.git@6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d",

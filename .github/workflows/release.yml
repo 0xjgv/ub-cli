@@ -15,6 +15,8 @@ concurrency:
 
 jobs:
   version:
+    # Supply-chain guard: only the repository owner can start or re-run a release.
+    if: github.actor == github.repository_owner && github.triggering_actor == github.repository_owner
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -91,12 +93,6 @@ jobs:
           mkdir "$RUNNER_TEMP/ub-smoke"
           tar -xzf "$archive" -C "$RUNNER_TEMP/ub-smoke" ub
           sh scripts/smoke-release.sh "$RUNNER_TEMP/ub-smoke/ub"
-          release_base="$RUNNER_TEMP/ub-releases"
-          mkdir -p "$release_base/latest/download"
-          cp "$archive" "$release_base/latest/download/"
-          (cd "$release_base/latest/download" && shasum -a 256 *.tar.gz > checksums.txt)
-          UB_DOWNLOAD_BASE="$release_base" "$RUNNER_TEMP/ub-smoke/ub" update
-          test "$("$RUNNER_TEMP/ub-smoke/ub" --version)" = "ub $RELEASE_VERSION"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ub-${{ matrix.os }}-${{ matrix.arch }}
@@ -107,8 +103,6 @@ jobs:
   bundle:
     needs: [version, build]
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -133,8 +127,38 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+
+  draft:
+    needs: [version, bundle]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    # Holds MINISIGN_SECRET_KEY; no other job can read it.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ub-release
+          path: dist
+      - name: Sign checksums.txt
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          test -n "$MINISIGN_SECRET_KEY" || { echo "MINISIGN_SECRET_KEY is not set in the release environment" >&2; exit 1; }
+          sudo apt-get update -q
+          sudo apt-get install -y -q minisign
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
+          minisign -S -s "$key" -m dist/checksums.txt -t "ub v$RELEASE_VERSION"
+          rm -f "$key"
+          # The installer's embedded key must accept the signature before anything is uploaded.
+          minisign -V -P "$(sed -n 's/^PUBLIC_KEY=//p' install.sh)" -m dist/checksums.txt
       - name: Create or update draft release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -151,3 +175,82 @@ jobs:
             gh release create "$tag" dist/* --verify-tag --draft \
               --title "ub $tag" --generate-notes
           fi
+
+  verify:
+    needs: [version, draft]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            os: linux
+            arch: amd64
+          - runner: ubuntu-22.04-arm
+            os: linux
+            arch: arm64
+          - runner: macos-15-intel
+            os: darwin
+            arch: amd64
+          - runner: macos-15
+            os: darwin
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      # Draft releases are only visible to tokens that can write.
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Install minisign
+        run: |
+          if command -v brew >/dev/null 2>&1; then
+            brew install minisign
+          else
+            sudo apt-get update -q
+            sudo apt-get install -y -q minisign
+          fi
+      - name: Download the draft release
+        run: |
+          base="$RUNNER_TEMP/releases"
+          gh release download "v$RELEASE_VERSION" --dir "$base/download/v$RELEASE_VERSION"
+          echo "UB_DOWNLOAD_BASE=$base" >> "$GITHUB_ENV"
+          echo "UB_VERSION=v$RELEASE_VERSION" >> "$GITHUB_ENV"
+      - name: Install with the draft's install.sh (minisign verifies the signature)
+        run: |
+          UB_INSTALL_DIR="$RUNNER_TEMP/installed" sh "$UB_DOWNLOAD_BASE/download/$UB_VERSION/install.sh"
+          test "$("$RUNNER_TEMP/installed/ub" --version)" = "ub $RELEASE_VERSION"
+      - name: Update with the new executable (its embedded key verifies the signature)
+        run: |
+          UB_INSTALL_DIR="$RUNNER_TEMP/updated" "$RUNNER_TEMP/installed/ub" update
+          test "$("$RUNNER_TEMP/updated/ub" --version)" = "ub $RELEASE_VERSION"
+      - name: Update from the previous published release
+        env:
+          PLATFORM: ${{ matrix.os }}_${{ matrix.arch }}
+        run: |
+          previous=$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName')
+          if [ -z "$previous" ]; then
+            echo "No published release to update from."
+            exit 0
+          fi
+          mkdir "$RUNNER_TEMP/previous"
+          gh release download "$previous" --dir "$RUNNER_TEMP/previous" --pattern "ub_*_$PLATFORM.tar.gz"
+          tar -xzf "$RUNNER_TEMP"/previous/ub_*.tar.gz -C "$RUNNER_TEMP/previous" ub
+          UB_INSTALL_DIR="$RUNNER_TEMP/previous" "$RUNNER_TEMP/previous/ub" update
+          test "$("$RUNNER_TEMP/previous/ub" --version)" = "ub $RELEASE_VERSION"
+
+  promote:
+    needs: [version, verify]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: gh release edit "v$RELEASE_VERSION" --draft=false --latest
