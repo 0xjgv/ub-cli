@@ -51,6 +51,14 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"version={version}\n")
           PY
+      - name: Check that vendored engines match their pins
+        run: |
+          python scripts/vendor.py
+          test -z "$(git status --porcelain -- src/ub_cli/_vendor)" || {
+            git status --short -- src/ub_cli/_vendor
+            echo "src/ub_cli/_vendor differs from scripts/vendor.py output; never edit it by hand." >&2
+            exit 1
+          }
 
   build:
     needs: version
@@ -254,3 +262,23 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: gh release edit "v$RELEASE_VERSION" --draft=false --latest
+
+  pypi:
+    needs: [version, promote]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    # PyPI trusted publishing: the pending publisher names this workflow and environment.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: '0.13.7'
+      - name: Build and publish to PyPI
+        run: |
+          uv build --python 3.11 --out-dir pypi-dist
+          uv publish --trusted-publishing always pypi-dist/*

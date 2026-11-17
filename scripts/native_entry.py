@@ -36,13 +36,13 @@ if getattr(sys, "frozen", False):
                 print(notice.read_text(encoding="utf-8", errors="replace"))
         raise SystemExit(0)
 
-    import mutator.runner
+    from ub_cli._vendor.mutator import runner
     import tree_sitter_language_pack as languages
 
     languages.configure(
         languages.PackConfig(cache_dir=str(Path(sys._MEIPASS) / "grammar-cache"))
     )
-    mutator.runner._project_interpreter = project_interpreter
+    runner._project_interpreter = project_interpreter
     # External compilers and project interpreters must load their own libraries.
     if sys.platform.startswith("linux"):
         original = os.environ.get("LD_LIBRARY_PATH_ORIG")

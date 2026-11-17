@@ -40,7 +40,7 @@ def run(argv: list[str]) -> int:
 
     command, *args = argv
     if command in ENGINES:
-        engine = import_module(f"{ENGINES[command]}.cli")
+        engine = import_module(f"ub_cli._vendor.{ENGINES[command]}.cli")
         # shortcut: rewrites upstream's module HELP, which hardcodes the engine name
         # and ignores argv[0]; tests catch a renamed or reformatted HELP. Drop this
         # once the engines accept a program name.
