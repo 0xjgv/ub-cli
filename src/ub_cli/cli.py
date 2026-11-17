@@ -28,11 +28,11 @@ def run(argv: list[str]) -> int:
 
     command, *args = argv
     if command == "crap":
-        from crapper.cli import run as execute
+        from ub_cli._vendor.crapper.cli import run as execute
     elif command == "dry":
-        from dryer.cli import run as execute
+        from ub_cli._vendor.dryer.cli import run as execute
     elif command == "mutate":
-        from mutator.cli import run as execute
+        from ub_cli._vendor.mutator.cli import run as execute
     elif command == "update":
         from ub_cli.update import run as execute
     elif command == "skill":
