@@ -9,26 +9,26 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ub_cli._vendor.crapper.coverage import _profile_segments, load_bundle
-from ub_cli._vendor.crapper.crap import make_entry, sort_entries
-from ub_cli._vendor.crapper.discover import iter_source_files, language_of
-from ub_cli._vendor.crapper.languages import functions_in_file
-from ub_cli._vendor.crapper.metrics import write_metrics as write_crap
-from ub_cli._vendor.crapper.report import format_report
-from ub_cli._vendor.crapper.runners import run_coverage
-from ub_cli._vendor.dryer.discover import iter_source_files as dry_files
-from ub_cli._vendor.dryer.report import format_text, write_metrics as write_dry
-from ub_cli._vendor.dryer.scan import find_duplicates, scan_files
-from ub_cli._vendor.mutator.engine import mutate_file, restore_backups
-from ub_cli._vendor.mutator.coverage import covered_lines
-from ub_cli._vendor.mutator.report import format_results, format_site_log
-from ub_cli._vendor.mutator.runner import CommandRunner, test_plan
+from ub_cli.vendor.crapper.coverage import _profile_segments, load_bundle
+from ub_cli.vendor.crapper.crap import make_entry, sort_entries
+from ub_cli.vendor.crapper.discover import iter_source_files, language_of
+from ub_cli.vendor.crapper.languages import functions_in_file
+from ub_cli.vendor.crapper.metrics import write_metrics as write_crap
+from ub_cli.vendor.crapper.report import format_report
+from ub_cli.vendor.crapper.runners import run_coverage
+from ub_cli.vendor.dryer.discover import iter_source_files as dry_files
+from ub_cli.vendor.dryer.report import format_text, write_metrics as write_dry
+from ub_cli.vendor.dryer.scan import find_duplicates, scan_files
+from ub_cli.vendor.mutator.engine import mutate_file, restore_backups
+from ub_cli.vendor.mutator.coverage import covered_lines
+from ub_cli.vendor.mutator.report import format_results, format_site_log
+from ub_cli.vendor.mutator.runner import CommandRunner, test_plan
 from tree_sitter_language_pack import Error as ParserError
 
 
 def _crap_failures(entries) -> list[str]:
     return [
-        f"CRAP {entry.crap:g} >= 10 in {entry.namespace}/{entry.name}"
+        f"CRAP {entry.crap:.1f} >= 10 in {entry.namespace}/{entry.name}"
         for entry in entries
         if entry.crap is not None and entry.crap >= 10
     ]
@@ -205,10 +205,16 @@ def _set_aside(reports: list[Path]):
                 aside.rename(report)
 
 
-def _gate(summary: str, failures: list[str]) -> None:
+GATE_FAILURES_SHOWN = 20
+
+
+def _gate(summary: str, failures: list[str], verbose: bool) -> None:
     print(summary)
-    for failure in failures:
+    shown = failures if verbose else failures[:GATE_FAILURES_SHOWN]
+    for failure in shown:
         print(f"  {failure}")
+    if len(shown) < len(failures):
+        print(f"  ... and {len(failures) - len(shown)} more; --verbose for all")
 
 
 def _verdict(failures: list[str], incomplete: list[str]) -> int:
@@ -240,7 +246,7 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
     if options.verbose:
         print(format_report(entries), end="")
     crap = _crap_failures(measured)
-    _gate(f"CRAP: {len(crap)} of {len(entries)} functions >= 10", crap)
+    _gate(f"CRAP: {len(crap)} of {len(entries)} functions >= 10", crap, options.verbose)
 
     normalized, warnings = scan_files(duplicates_files, root, min_lines=4, min_nodes=20)
     candidates = find_duplicates(normalized, 0.8)
@@ -248,7 +254,7 @@ def _static_gates(root: Path, files, duplicates_files, bundle, options, coverage
     if options.verbose:
         print(format_text(candidates), end="")
     dry = _dry_failures(candidates)
-    _gate(f"Duplication: {len(dry)} pairs >= 0.8", dry)
+    _gate(f"Duplication: {len(dry)} pairs >= 0.8", dry, options.verbose)
     return crap + dry, incomplete + warnings
 
 
@@ -282,7 +288,11 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     killed = sum(form.killed for form in forms)
     survived = sum(form.survived for form in forms)
     uncovered = sum(form.uncovered for form in forms)
-    _gate(f"Mutation: {killed} killed, {survived} survived, {uncovered} uncovered", failures)
+    _gate(
+        f"Mutation: {killed} killed, {survived} survived, {uncovered} uncovered",
+        failures,
+        options.verbose,
+    )
     return failures, incomplete
 
 

@@ -36,7 +36,7 @@ if getattr(sys, "frozen", False):
                 print(notice.read_text(encoding="utf-8", errors="replace"))
         raise SystemExit(0)
 
-    from ub_cli._vendor.mutator import runner
+    from ub_cli.vendor.mutator import runner
     import tree_sitter_language_pack as languages
 
     languages.configure(

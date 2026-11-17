@@ -22,12 +22,12 @@ class RewriteTests(unittest.TestCase):
         )
         self.assertEqual(vendor.rewrite(source, Path("x.py")), (
             "import os\n"
-            "from ub_cli._vendor.crapper.model import Entry\n"
-            "from ub_cli._vendor.mutator import edn\n"
+            "from ub_cli.vendor.crapper.model import Entry\n"
+            "from ub_cli.vendor.mutator import edn\n"
             "def load():\n"
-            "    from ub_cli._vendor import crapper\n"
-            "    import ub_cli._vendor.crapper.coverage\n"
-            "    from ub_cli._vendor import crapper\n"
+            "    from ub_cli.vendor import crapper\n"
+            "    import ub_cli.vendor.crapper.coverage\n"
+            "    from ub_cli.vendor import crapper\n"
             "    return crapper\n"
             "from dryerless import thing\n"
         ))

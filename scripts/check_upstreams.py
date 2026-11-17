@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-pins = Path(__file__).resolve().parents[1] / "src" / "ub_cli" / "_vendor" / "VENDORED"
+pins = Path(__file__).resolve().parents[1] / "src" / "ub_cli" / "vendor" / "VENDORED"
 dependencies = [line.split() for line in pins.read_text().splitlines() if line and not line.startswith("#")]
 
 failed = False

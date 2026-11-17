@@ -7,11 +7,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from ub_cli._vendor.crapper.coverage import load_bundle
-from ub_cli._vendor.dryer.model import Entry
-from ub_cli._vendor.mutator.model import RunResult
+from ub_cli.vendor.crapper.coverage import load_bundle
+from ub_cli.vendor.dryer.model import Entry
+from ub_cli.vendor.mutator.model import RunResult
 
 from ub_cli import check
 
@@ -135,7 +136,7 @@ class CheckAcceptanceTests(unittest.TestCase):
             "assert [choose(value) for value in range(10)] == list(range(10))"
         )
         self.assertEqual(1, status, output)
-        self.assertIn("CRAP 10 >= 10", output)
+        self.assertIn("CRAP 10.0 >= 10", output)
         metrics = (self.root / ".metrics" / "crap.edn").read_text(encoding="utf-8")
         self.assertIn(":complexity 10", metrics)
         self.assertIn(":coverage 100.0", metrics)
@@ -223,7 +224,7 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.coverage()
         status, output = self.run_check("pass")
         self.assertEqual(2, status, output)
-        self.assertIn("CRAP 10 >= 10 in example/choose", output)
+        self.assertIn("CRAP 10.0 >= 10 in example/choose", output)
         self.assertIn("Missing coverage for src/other.py:1", output)
         self.assertNotIn("other/other", output)
 
@@ -292,6 +293,33 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status, output)
         self.assertIn("Missing coverage for src/other.py:1", output)
         self.assertIn("runner noise", output)
+
+    def test_gate_caps_failures_unless_verbose(self):
+        failures = [f"failure {number}" for number in range(25)]
+        for verbose, shown in ((False, 20), (True, 25)):
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                check._gate("Gate:", failures, verbose)
+            lines = stdout.getvalue().splitlines()
+            self.assertEqual(["Gate:"] + [f"  failure {n}" for n in range(shown)], lines[: shown + 1])
+            self.assertEqual(
+                [] if verbose else ["  ... and 5 more; --verbose for all"], lines[shown + 1 :]
+            )
+
+    def test_gate_prints_twenty_failures_without_a_tail(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            check._gate("Gate:", [f"failure {n}" for n in range(20)], False)
+        self.assertEqual(21, len(stdout.getvalue().splitlines()))
+        self.assertNotIn("more", stdout.getvalue())
+
+    def test_crap_failures_print_one_decimal(self):
+        entries = [
+            SimpleNamespace(crap=35.2693, namespace="pkg", name="hot"),
+            SimpleNamespace(crap=9.99, namespace="pkg", name="cool"),
+            SimpleNamespace(crap=None, namespace="pkg", name="unknown"),
+        ]
+        self.assertEqual(["CRAP 35.3 >= 10 in pkg/hot"], check._crap_failures(entries))
 
     def test_quietly_shows_output_when_the_call_raises(self):
         def fail():

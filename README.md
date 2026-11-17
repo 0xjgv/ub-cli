@@ -122,8 +122,8 @@ wheel.
 [Crapper](https://github.com/unclebob/crapper),
 [Dryer](https://github.com/unclebob/dryer), and
 [Mutator](https://github.com/unclebob/mutator) are vendored under
-`src/ub_cli/_vendor` at the commits in `src/ub_cli/_vendor/VENDORED`, with their
-imports rewritten to `ub_cli._vendor`. Never edit that directory by hand.
+`src/ub_cli/vendor` at the commits in `src/ub_cli/vendor/VENDORED`, with their
+imports rewritten to `ub_cli.vendor`. Never edit that directory by hand.
 `make check-upstreams` compares the pins with upstream and prints the update
 command, `python scripts/vendor.py NAME COMMIT`. The Release workflow fails when
 the directory differs from what `scripts/vendor.py` produces.
