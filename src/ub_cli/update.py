@@ -8,7 +8,7 @@ import sys
 
 def run(argv: list[str]) -> int:
     if argv in (["-h"], ["--help"]):
-        print("Usage: ub update\nInstall the latest native release using the bundled installer.")
+        print("Usage: ub update\nInstall the latest native release unless it is already installed.")
         return 0
     if argv:
         print("Usage: ub update", file=sys.stderr)

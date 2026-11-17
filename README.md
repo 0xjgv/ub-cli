@@ -25,7 +25,8 @@ ub --version
 
 After a native install, run `ub update` to replace the running executable
 in its install directory with the latest release. It uses the same checksum
-verification as the initial install. For Python installations, upgrade with
+verification as the initial install, and exits without downloading when the
+latest release is already installed. For Python installations, upgrade with
 the package manager you used to install `ub-cli`.
 
 For a manual install, download your platform archive and `checksums.txt` from

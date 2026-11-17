@@ -82,6 +82,18 @@ archive=$(awk -v os="$os" -v arch="$arch" -v version="$version" '
     END {if (count == 1) print found}
 ' "$tmpdir/checksums.txt")
 [ -n "$archive" ] || die "expected one $os/$arch archive in $release/checksums.txt"
+archive_version=${archive#ub_}
+archive_version=${archive_version%_"$os"_"$arch".tar.gz}
+
+previous=
+if [ -x "$target" ]; then
+    previous=$("$target" --version 2>/dev/null || true)
+fi
+if [ "$previous" = "ub $archive_version" ]; then
+    echo "$target is already up to date: $previous"
+    exit 0
+fi
+
 expected=$(awk -v name="$archive" '{sub(/^\*/, "", $2)} $2 == name {print $1}' "$tmpdir/checksums.txt")
 fetch "$release/$archive" "$tmpdir/$archive"
 actual=$(sha256 "$tmpdir/$archive")
@@ -89,17 +101,11 @@ actual=$(sha256 "$tmpdir/$archive")
 tar -xzf "$tmpdir/$archive" -C "$tmpdir" ub || die "cannot extract ub from $archive"
 [ -f "$tmpdir/ub" ] && [ ! -L "$tmpdir/ub" ] || die "archive must contain a regular ub executable"
 
-previous=
-if [ -x "$target" ]; then
-    previous=$("$target" --version 2>/dev/null || true)
-fi
 mkdir -p "$install_dir"
 tmpbin=$(mktemp "$install_dir/.ub.XXXXXX")
 cp "$tmpdir/ub" "$tmpbin"
 chmod 755 "$tmpbin"
 current=$("$tmpbin" --version) || die "downloaded ub does not run"
-archive_version=${archive#ub_}
-archive_version=${archive_version%_"$os"_"$arch".tar.gz}
 [ "$current" = "ub $archive_version" ] || die "downloaded ub reported an unexpected version: $current"
 mv -f "$tmpbin" "$target"
 tmpbin=

@@ -74,6 +74,16 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual("keep\n", preserved.read_text())
         self.assertFalse(list(self.install.glob(".ub.*")))
 
+    def test_skips_download_when_installed_version_is_current(self):
+        location = self.release()
+        self.assertEqual(0, self.run_install().returncode)
+        original = (self.install / "ub").read_bytes()
+        (location / "ub_0.1.0_linux_amd64.tar.gz").unlink()
+        result = self.run_install()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("already up to date: ub 0.1.0", result.stdout)
+        self.assertEqual(original, (self.install / "ub").read_bytes())
+
     def test_version_can_be_pinned_with_or_without_v_prefix(self):
         self.release("0.1.0", pinned=True)
         for value in ("0.1.0", "v0.1.0"):
@@ -100,10 +110,11 @@ class InstallerTests(unittest.TestCase):
                 (location / "checksums.txt").write_text(all_checksums)
 
     def test_checksum_failure_preserves_installed_binary(self):
-        location = self.release()
+        self.release()
         self.assertEqual(0, self.run_install().returncode)
         original = (self.install / "ub").read_bytes()
-        (location / "ub_0.1.0_linux_amd64.tar.gz").write_bytes(b"tampered")
+        location = self.release("0.2.0")
+        (location / "ub_0.2.0_linux_amd64.tar.gz").write_bytes(b"tampered")
         result = self.run_install()
         self.assertNotEqual(0, result.returncode)
         self.assertIn("checksum mismatch", result.stderr)
