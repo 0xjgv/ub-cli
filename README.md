@@ -147,8 +147,12 @@ the mutated copy.
 
 Run `make test` for the test suite and `make build-native` to produce the
 archive for the current machine under `dist/`. `make build` builds the Python
-wheel. The CI workflow runs `make test` and the vendored-tree check below on
-every pull request and every push to `main`.
+wheel. `make gate` runs this checkout's `ub check` on `src/`. The CI workflow
+runs `make test` and the vendored-tree check below as the `test` job, and
+`make gate` as the `gate` job, on every pull request and every push to `main`.
+The gate leaves out `scripts/`, the release tooling. Its one script with real
+logic, `scripts/vendor.py`, has its import rewriting unit-tested and its full
+re-vendor run by the vendored-tree check on every pull request.
 
 [Crapper](https://github.com/unclebob/crapper),
 [Dryer](https://github.com/unclebob/dryer), and
