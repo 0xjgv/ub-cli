@@ -570,14 +570,16 @@ class FocusTests(unittest.TestCase):
         }
         self.assertEqual([["test_late"]], check.affected_tests(graph, "pkg.mod"))
 
-    def test_focus_orders_modules_nearest_then_fastest_and_drops_failing_ones(self):
+    def test_focus_orders_modules_nearest_then_named_then_fastest_and_drops_failing_ones(self):
         self.write("src/pkg/__init__.py")
         self.write("src/pkg/mod.py", "def add(a, b):\n    return a + b\n")
         self.write("src/pkg/user.py", "from . import mod\n")
-        for name in ("test_early", "test_late", "test_broken"):
+        for name in ("test_early", "test_late", "test_broken", "test_mod"):
             self.write(f"tests/{name}.py", "import pkg.mod\n")
         self.write("tests/test_far.py", "import pkg.user\n")
-        seconds = {"test_early": 3.0, "test_late": 0.5, "test_broken": 0.1, "test_far": 0.1}
+        seconds = {
+            "test_early": 3.0, "test_late": 0.5, "test_broken": 0.1, "test_far": 0.1, "test_mod": 4.0
+        }
         ran = []
 
         def run(command, directory, timeout):
@@ -590,12 +592,12 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(
             [
                 f"python -m unittest discover -f -k '*{test}.*'"
-                for test in ("test_late", "test_early", "test_far")
+                for test in ("test_mod", "test_late", "test_early", "test_far")
             ],
             commands,
         )
         self.assertEqual(commands, focus(self.root / "src/pkg/mod.py"))
-        self.assertEqual(4, len(ran))
+        self.assertEqual(5, len(ran))
         self.assertEqual([], check._focuser(self.root, None, "make test")(self.root / "src/pkg/mod.py"))
 
     def test_focused_runner_stops_at_the_first_failing_focus(self):

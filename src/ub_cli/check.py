@@ -418,8 +418,10 @@ def focused_command(command, tests: list[str]):
 
 
 def _focuser(root: Path, runner, override: str | None):
-    """Return a source file's focused commands, one per test module, nearest and fastest first.
+    """Return a source file's focused commands, one per test module.
 
+    Nearest import first; within one distance, the module named for the file
+    (`test_<stem>`), then the fastest on the original code.
     A module whose focused command fails on the original code is left out.
     """
 
@@ -444,8 +446,8 @@ def _focuser(root: Path, runner, override: str | None):
                 if key not in baselines:
                     baselines[key] = runner.run(focused, directory, None)
                 if baselines[key].code == 0:
-                    timed.append((baselines[key].seconds, focused))
-            commands += [focused for _seconds, focused in sorted(timed, key=lambda item: item[0])]
+                    timed.append((test != f"test_{path.stem}", baselines[key].seconds, focused))
+            commands += [focused for *_order, focused in sorted(timed, key=lambda item: item[:2])]
         return commands
 
     return focus
