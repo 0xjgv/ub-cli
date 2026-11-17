@@ -44,9 +44,8 @@ Run `minisign -V -P <key above> -m checksums.txt`, compare the archive's
 `shasum -a 256` (or `sha256sum`) with the entry for its filename, and extract
 `ub` into a directory on your `PATH`. To uninstall, remove that executable.
 
-To install the Python package instead, run `uv tool install ub-cli` or
-`python -m pip install ub-cli` with Python 3.11+. From a source checkout, run
-`make install` with uv available, or `python -m pip install .`.
+To install from a source checkout instead, run `make install` with uv
+available, or `python -m pip install .` in a Python 3.11+ virtual environment.
 
 ## Install the agent skill
 
@@ -133,8 +132,7 @@ repository owner pushed or re-ran it:
    `install.sh`, and upload everything to a draft release.
 4. On every platform, install from the draft with its `install.sh`, update
    with the new `ub`, and update from the previous published release.
-5. Publish the draft, then publish the Python package to PyPI through trusted
-   publishing in the `pypi` environment.
+5. Publish the draft.
 
 A published release is never modified. Running the workflow manually builds
 and tests the archives without creating a release.

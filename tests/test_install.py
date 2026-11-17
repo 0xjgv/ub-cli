@@ -11,24 +11,40 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from ub_cli import signature as ed
 
 
 INSTALLER = Path(__file__).resolve().parents[1] / "install.sh"
-SIGNING_KEY = Ed25519PrivateKey.generate()
+# Test-only Ed25519 signing (RFC 8032, section 6) so the tests can sign releases.
+SECRET = hashlib.sha256(b"ub test key").digest()
 KEY_ID = b"ubtest01"
-PUBLIC_KEY = base64.b64encode(
-    b"Ed" + KEY_ID + SIGNING_KEY.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-).decode()
+
+
+def compress(point):
+    inverse = pow(point[2], ed.p - 2, ed.p)
+    x, y = point[0] * inverse % ed.p, point[1] * inverse % ed.p
+    return (y | (x & 1) << 255).to_bytes(32, "little")
+
+
+def ed25519_sign(message: bytes) -> tuple[bytes, bytes]:
+    digest = hashlib.sha512(SECRET).digest()
+    a = int.from_bytes(digest[:32], "little") & ((1 << 254) - 8) | 1 << 254
+    public = compress(ed.point_mul(a, ed.G))
+    r = ed.sha512_modq(digest[32:] + message)
+    encoded_r = compress(ed.point_mul(r, ed.G))
+    s = (r + ed.sha512_modq(encoded_r + public + message) * a) % ed.q
+    return encoded_r + s.to_bytes(32, "little"), public
+
+
+PUBLIC_KEY = base64.b64encode(b"Ed" + KEY_ID + ed25519_sign(b"")[1]).decode()
 
 
 def minisign(message: bytes, comment: str = "ub test") -> str:
     """Sign like `minisign -S`: prehashed signature plus a signed trusted comment."""
-    signature = SIGNING_KEY.sign(hashlib.blake2b(message).digest())
+    signature, _ = ed25519_sign(hashlib.blake2b(message).digest())
+    signed_comment, _ = ed25519_sign(signature + comment.encode())
     blob = base64.b64encode(b"ED" + KEY_ID + signature).decode()
-    signed_comment = base64.b64encode(SIGNING_KEY.sign(signature + comment.encode())).decode()
-    return f"untrusted comment: test\n{blob}\ntrusted comment: {comment}\n{signed_comment}\n"
+    return f"untrusted comment: test\n{blob}\ntrusted comment: {comment}\n{base64.b64encode(signed_comment).decode()}\n"
 
 
 class InstallerTests(unittest.TestCase):
