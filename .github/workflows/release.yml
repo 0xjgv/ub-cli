@@ -139,7 +139,6 @@ jobs:
   draft:
     needs: [version, bundle]
     if: github.event_name == 'push'
-    # Ubuntu 22.04 has no minisign package; 24.04 does.
     runs-on: ubuntu-24.04
     # Holds MINISIGN_SECRET_KEY; no other job can read it.
     environment: release
@@ -153,14 +152,16 @@ jobs:
         with:
           name: ub-release
           path: dist
+      - name: Install minisign
+        run: |
+          scripts/install-minisign.sh "$RUNNER_TEMP/minisign"
+          echo "$RUNNER_TEMP/minisign" >> "$GITHUB_PATH"
       - name: Sign checksums.txt
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           test -n "$MINISIGN_SECRET_KEY" || { echo "MINISIGN_SECRET_KEY is not set in the release environment" >&2; exit 1; }
-          sudo apt-get update -q
-          sudo apt-get install -y -q minisign
           key="$RUNNER_TEMP/minisign.key"
           (umask 077 && printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key")
           minisign -S -s "$key" -m dist/checksums.txt -t "ub v$RELEASE_VERSION"
@@ -213,14 +214,16 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # This job needs only the minisign installer from the repository.
+          sparse-checkout: scripts/install-minisign.sh
+          sparse-checkout-cone-mode: false
       - name: Install minisign
         run: |
-          if command -v brew >/dev/null 2>&1; then
-            brew install minisign
-          else
-            sudo apt-get update -q
-            sudo apt-get install -y -q minisign
-          fi
+          scripts/install-minisign.sh "$RUNNER_TEMP/minisign"
+          echo "$RUNNER_TEMP/minisign" >> "$GITHUB_PATH"
       - name: Download the draft release
         run: |
           base="$RUNNER_TEMP/releases"
