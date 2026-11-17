@@ -9,6 +9,8 @@ HELP = """Usage: ub COMMAND [options]
   dry      Find structurally similar code
   mutate   Test whether mutations are caught
   check    Enforce all three ub-mode gates
+  init     Set up repository quality checks and agent instructions
+  hooks    Install Git and agent hooks for the repository
   skill    Install a bundled agent skill
   update   Update the standalone executable
 
@@ -48,6 +50,10 @@ def run(argv: list[str]) -> int:
         from ub_cli.skill import run as execute
     elif command == "check":
         from ub_cli.check import run as execute
+    elif command == "init":
+        from ub_cli.project import run as execute
+    elif command == "hooks":
+        from ub_cli.hooks import run as execute
     else:
         print(f"Unknown command: {command}\nRun ub --help for usage.", file=sys.stderr)
         return 2
