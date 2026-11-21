@@ -75,7 +75,8 @@ ub init -s src
 
 Use the source directory for your project, repeat `-s` for multiple trees, or
 omit it to check the whole project. `ub init` creates an executable `.ub/check`
-that runs `ub check`, adds a managed instruction block to `AGENTS.md` and
+that runs `ub check`, writes `.ub/ratchet` with the current escape-hatch counts
+(see [Escape-hatch ratchet](#escape-hatch-ratchet)) unless one exists, adds a managed instruction block to `AGENTS.md` and
 `CLAUDE.md`, and ignores generated metrics and mutation-worker directories.
 It does not run tests or install hooks. Review and commit these files so new
 agent sessions and teammates use the same workflow. Other instructions are
@@ -111,7 +112,11 @@ Repeat `--target` to select several hooks. Installation is explicit and repeatab
 be on the PATH used by Git and your agent. Installation from a subdirectory
 uses the Git worktree root. `--root PATH` selects another repository.
 
-The Git hook runs `.ub/check` first, then the existing shell hook, preserving its
+The Git hook first runs `ub ratchet --guard` on each pushed branch (see
+[Escape-hatch ratchet](#escape-hatch-ratchet)). The guard runs from the
+installed `ub`, not from `.ub/check`, which the pushed commits could edit. Hooks
+installed by earlier releases lack the guard; rerun `ub hooks install` to
+upgrade the block. The hook then runs `.ub/check`, then the existing shell hook, preserving its
 path, arguments, stdin, and failing exit status. A copy of the original is kept
 beside it as `pre-push.ub-original`. Git's configured `core.hooksPath`
 is respected when it is inside the repository; external shared directories and
@@ -181,6 +186,107 @@ ran a line (the message names the custom or Python coverage command that ran),
 and when a path or filter argument matches no source file (except
 with `--changed`). A bare run on a project without source files still exits 0.
 
+## Escape-hatch ratchet
+
+Agents can pass a gate by switching a check off instead of fixing the code.
+`ub ratchet` counts those escape hatches in every file Git tracks or would
+track (`git ls-files -co --exclude-standard`), tests included, whatever `-s`
+selects. Each kind has its own count:
+
+| Language | Keys |
+| --- | --- |
+| Python | `lint.noqa` (also `# ruff: noqa`, `# flake8: noqa`, any case), `lint.type_ignore` (also `# mypy: ignore-errors`), `lint.pyright_ignore` (also `# pyright: basic`), `coverage.pragma_no_cover`, `skip.unittest` (`@unittest.skip`, `@skipIf`, `@skipUnless`, `@expectedFailure`, `self.skipTest(`, `SkipTest(`), `skip.pytest` (`mark.skip`, `mark.skipif`, `mark.xfail`, `pytest.skip(`, `pytest.xfail(`, `pytest.importorskip(`) |
+| JS/TS, Vue, Svelte | `lint.eslint_disable`, `lint.ts_ignore`, `lint.ts_expect_error`, `lint.ts_nocheck`, `lint.biome_ignore`, `coverage.istanbul_ignore`, `coverage.c8_ignore`, `coverage.v8_ignore`, `skip.js` (`.skip`, `.only`, `.todo`, `.fixme`, `.fails`, `.skipIf` on `describe`/`it`/`test`/`suite`/`context`, `xit(`, `fit(`, `xdescribe(`, `fdescribe(`, `this.skip(`) |
+| Java | `skip.no_mutate_tag` (`@Tag("no-mutate")`, which the mutation tests exclude) |
+
+Lint and coverage patterns match only in comments; skips match decorator and
+call syntax. Python string literals are blanked before matching, so a quoted
+directive does not count. Each occurrence counts, including two on one line.
+Symlinks are not followed.
+
+`.ub/ratchet` sits at the Git worktree root and holds one `key count` line per
+kind, plus optional `exclude GLOB` lines for vendored or generated files that
+should not be counted (`fnmatch` rules on the repository-relative path; `*`
+crosses directories, so `exclude vendor/*` skips the whole tree). `ub check`
+runs the ratchet before coverage and fails when any count exceeds its line; the
+other gates still run and report. The file stores counts, not locations, so a
+failure lists the kind's matches in files with uncommitted changes, the likely
+new ones, and the number elsewhere; with none in changed files, as in CI, it
+lists every match. It ends with how to remove or accept them. Equal or lower
+counts pass. Without `.ub/ratchet` the counts are report-only, and outside
+a Git repository the ratchet is skipped. A malformed or symlinked `.ub/ratchet`,
+or a failed file listing, makes the check incomplete. `ub ratchet` runs the
+same comparison alone.
+
+Raising a count or adding an exclude belongs to a human: run
+`ub ratchet --update`, which writes the current counts and keeps the excludes,
+and commit the file. `ub ratchet --lower` only lowers counts to the current
+ones and never raises one or adds an exclude, so agents may run it after
+removing escape hatches; otherwise each removal leaves room for a free new one.
+The managed agent instructions tell agents to lower the counts and never to run
+`--update` or edit `.ub/` unless asked.
+
+`ub ratchet --guard --base REF [--head REF]` fails when the commits since the
+merge base of the head (default `HEAD`) and `REF` change `.ub/check` (content
+or mode), delete `.ub/ratchet`, raise any of its counts, or add an exclude, and when the
+worktree's `.ub/check` or `.ub/ratchet` differs from `HEAD`. Adding them to a
+repository that had none, and lowering counts, pass. Set `UB_ALLOW_UB_CHANGE=1`
+to accept a reviewed change. The guard exits 2 when it cannot find the merge
+base, as in a shallow clone, or when a committed `.ub/ratchet` is malformed or
+not a regular file. Run it in CI as a separate step, not through `.ub/check`,
+with full history:
+
+```yaml
+on:
+  pull_request:
+    # labeled and unlabeled rerun the guard when a human adds the approval label.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+# ...
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: ub ratchet --guard --base origin/main
+  env:
+    # A human approves a .ub/ change by labelling the pull request.
+    UB_ALLOW_UB_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'ub-change') && '1' || '' }}
+- run: ./.ub/check
+```
+
+The pre-push hook guards each pushed branch against the remote's default
+branch (`refs/remotes/<remote>/HEAD`), as CI does, or, without one, against the
+remote's copy of the branch or the branch's upstream. With none of these it
+exits 2 and asks for `git remote set-head <remote> --auto`, unless the remote
+has no known branches yet, when it skips the guard with a note. The local hook
+is advisory: an agent can skip it with `--no-verify`, set the override, or
+change Git config. An agent that edits the CI workflow can remove the CI steps.
+Put `/.ub/` and `/.github/workflows/` under
+[CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
+with required review; that review is the human gate. The Stop hook also warns
+the human, without blocking, when `.ub/` has staged, unstaged, or untracked
+changes, or files that differ from `HEAD`.
+
+Known limits:
+
+- Moving an escape hatch, by removing one and adding another of the same kind,
+  keeps the count. So does widening one, such as `# noqa: E501` to `# noqa`.
+- Configuration-file hatches are not counted: per-file lint ignores, coverage
+  `omit`, pytest `addopts`, `collect_ignore`, `tsconfig` strictness.
+- A directive inside a multi-line block comment, after its first line, is missed.
+- Outside Python, strings and comments are not parsed: a quoted directive or a
+  commented-out skip in JS/TS or Java counts.
+- The Stop hook keeps the last 8,000 bytes of output. When no match of a grown
+  kind is in a changed file, the full list is printed and can push the kind and
+  counts out of the agent's view.
+- Deleting a failing test and passing extra arguments to `./.ub/check` are not
+  detected.
+- Go, Rust, and Clojure patterns are not yet counted.
+
+| `ub ratchet` status | Meaning |
+| --- | --- |
+| 0 | No count above `.ub/ratchet`, or the guard found no loosening (or `UB_ALLOW_UB_CHANGE=1`). |
+| 1 | A count grew, or the guard found `.ub/check` changed, `.ub/ratchet` deleted, a count raised, an exclude added, or uncommitted `.ub/` changes. |
+| 2 | Usage error, a malformed or symlinked `.ub/ratchet`, a failed file listing, `--update` or `--lower` outside Git, `--lower` without `.ub/ratchet`, or no merge base for the guard. |
+
 ## Combined gate
 
 `ub check` checks the whole project, or the trees named with `-s PATH`. It
@@ -205,8 +311,8 @@ mutant log, and to stream the coverage command's output.
 | Status | Meaning |
 | --- | --- |
 | 0 | All gates passed. |
-| 1 | A function scored CRAP ≥ 10, a pair scored similarity ≥ 0.8, or a mutation site was uncovered or survived. |
-| 2 | The check was incomplete, including missing coverage, coverage with no executed lines, a failing baseline, or a usage error. |
+| 1 | A function scored CRAP ≥ 10, a pair scored similarity ≥ 0.8, a mutation site was uncovered or survived, or an escape-hatch count exceeded `.ub/ratchet`. |
+| 2 | The check was incomplete, including missing coverage, coverage with no executed lines, a failing baseline, a malformed `.ub/ratchet`, or a usage error. |
 
 The tools write their native reports to `.metrics/crap.edn`, `.metrics/dry.edn`,
 and `.metrics/mutate/`. Standalone commands retain their upstream exit codes,

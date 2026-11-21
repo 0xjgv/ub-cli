@@ -84,6 +84,18 @@ class CheckAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, status, output)
         self.assertIn("\n  src/example.py:2 survived + -> -\n", output)
 
+    def test_ratchet_growth_fails_without_stopping_the_other_gates(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        (self.root / ".ub").mkdir()
+        (self.root / ".ub" / "ratchet").write_text("skip.unittest 0\n")
+        (self.root / "test_example.py").write_text("@unittest.skip('later')\ndef test(): pass\n")
+        self.coverage()
+        status, output = self.run_check("pass")
+        self.assertEqual(1, status, output)
+        self.assertIn("  skip.unittest: 1 > 0\n    test_example.py:1\n", output)
+        self.assertIn("\n  src/example.py:2 survived + -> -\n", output)
+        self.assertIn("Gates failed with 2 failing items.", output)
+
     def test_uncovered_site_fails_even_without_survivors(self):
         self.coverage(hits=0)
         status, output = self.run_check("pass")

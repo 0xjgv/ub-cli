@@ -13,11 +13,43 @@ import tempfile
 from ub_cli.project import git, local_file, repository, write_file
 
 
-GIT_CHECK = '''# ub:begin
+LEGACY_GIT_CHECK = '''# ub:begin
 (
     ub_check_root=$(git rev-parse --show-toplevel) || exit $?
     "$ub_check_root/.ub/check" </dev/null
 ) || exit $?
+# ub:end
+'''
+# The guard runs from the installed ub, not .ub/check, which the pushed commits can edit.
+# Each pushed branch is compared with the remote's default branch, as CI compares it; failing
+# that, with the remote's copy of the branch or its upstream. Only a remote with no known
+# branches skips the guard. Git's ref list on stdin is replayed for the rest of the hook.
+GIT_CHECK = '''# ub:begin
+ub_refs=$(mktemp) || exit $?
+cat > "$ub_refs" || exit $?
+(
+    ub_check_root=$(git rev-parse --show-toplevel) || exit $?
+    ub_default=$(git rev-parse --verify -q "refs/remotes/$1/HEAD") || ub_default=
+    ub_known=$(git for-each-ref --count=1 --format=known "refs/remotes/$1/")
+    while read -r ub_local ub_sha ub_remote ub_remote_sha; do
+        case $ub_remote in refs/heads/*) ;; *) continue ;; esac
+        case $ub_sha in *[!0]*) ;; *) continue ;; esac
+        ub_base=$ub_default
+        case $ub_remote_sha in *[!0]*) ub_base=${ub_base:-$ub_remote_sha} ;; esac
+        [ -n "$ub_base" ] || ub_base=$(git rev-parse --verify -q "$ub_local@{upstream}") || ub_base=
+        if [ -z "$ub_base" ] && [ -n "$ub_known" ]; then
+            echo "ub: no base to guard $ub_remote; run: git remote set-head $1 --auto" >&2
+            exit 2
+        elif [ -z "$ub_base" ]; then
+            echo "ub: $1 has no known branches; skipping the .ub/ tamper guard." >&2
+            continue
+        fi
+        ub ratchet --root "$ub_check_root" --guard --base "$ub_base" --head "$ub_sha" </dev/null || exit $?
+    done < "$ub_refs"
+    "$ub_check_root/.ub/check" </dev/null
+) || { ub_status=$?; rm -f "$ub_refs"; exit $ub_status; }
+exec < "$ub_refs"
+rm -f "$ub_refs"
 # ub:end
 '''
 AGENT_FILES = {"codex": ".codex/hooks.json", "claude": ".claude/settings.json"}
@@ -37,6 +69,9 @@ def install_git(root: Path) -> None:
         raise ValueError(f"Cannot wrap a symlink or non-file hook: {hook}")
     original = hook.read_text() if hook.exists() else ""
     if "# ub:begin" in original or "# ub:end" in original:
+        if original.count(LEGACY_GIT_CHECK) == 1:
+            write_file(hook, original.replace(LEGACY_GIT_CHECK, GIT_CHECK), 0o755)
+            return
         if original.count(GIT_CHECK) != 1:
             raise ValueError(f"Edited UB hook block needs review: {hook}")
         hook.chmod(0o755)
@@ -111,14 +146,14 @@ def terminate_check(process) -> None:
     try:
         os.killpg(process.pid, signal.SIGSTOP)
         while True:
-            table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="],
-                                   capture_output=True, text=True, check=True)
+            # int() reads the byte strings directly.
+            table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="], capture_output=True, check=True)
             parents = {int(pid): int(parent) for pid, parent in
                        (line.split() for line in table.stdout.splitlines())}
             descendants = {process.pid}
             while True:
                 children = {pid for pid, parent in parents.items() if parent in descendants}
-                if children <= descendants:
+                if not children - descendants:
                     break
                 descendants.update(children)
             new = descendants - stopped
@@ -156,26 +191,52 @@ def check_output(root: Path, timeout: int) -> tuple[int, str]:
         return code, output.read().decode(errors="replace")
 
 
+UB_CHANGED = "ub config has uncommitted changes: review .ub/ before committing."
+
+
+def stop_decision(payload, timeout: int) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Expected a hook event JSON object.")
+    if payload.get("stop_hook_active") is True:
+        return {"systemMessage": "UB continuation guard: report any unresolved check failures."}
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        raise ValueError("Hook event is missing cwd.")
+    code, output = check_output(repository(Path(cwd)), timeout)
+    if code == 0:
+        return {}
+    return {"decision": "block",
+            "reason": f"UB checks failed (exit {code}). Fix failures within the task scope or report the blocker.\n{output}"}
+
+
+def ub_changed(payload) -> bool:
+    """Whether .ub/ has staged, unstaged, or untracked changes, or files that differ from HEAD.
+
+    Unknown counts as no.
+    """
+
+    from ub_cli.ratchet import uncommitted
+
+    try:
+        root = repository(Path(payload["cwd"]))
+        return bool(git(root, "status", "--porcelain", "--", ".ub/") or uncommitted(root))
+    except (KeyError, TypeError, OSError, ValueError):
+        return False
+
+
 def run_stop(timeout: int) -> int:
+    payload = changed = None
     try:
         payload = json.load(sys.stdin)
-        if not isinstance(payload, dict):
-            raise ValueError("Expected a hook event JSON object.")
-        if payload.get("stop_hook_active") is True:
-            print(json.dumps({"systemMessage": "UB continuation guard: report any unresolved check failures."}))
-            return 0
-        cwd = payload.get("cwd")
-        if not isinstance(cwd, str) or not cwd:
-            raise ValueError("Hook event is missing cwd.")
-        root = repository(Path(cwd))
-        code, output = check_output(root, timeout)
-        if code == 0:
-            print("{}")
-            return 0
-        reason = f"UB checks failed (exit {code}). Fix failures within the task scope or report the blocker.\n{output}"
+        # Before the check runs, which could rewrite .ub/.
+        changed = ub_changed(payload)
+        decision = stop_decision(payload, timeout)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        reason = f"UB checks could not run: {exc}"
-    print(json.dumps({"decision": "block", "reason": reason}))
+        decision = {"decision": "block", "reason": f"UB checks could not run: {exc}"}
+    if changed:
+        # Warn the human only: the pre-push guard and CI enforce.
+        decision["systemMessage"] = " ".join(filter(None, [decision.get("systemMessage"), UB_CHANGED]))
+    print(json.dumps(decision))
     return 0
 
 
