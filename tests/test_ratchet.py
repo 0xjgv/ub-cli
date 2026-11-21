@@ -141,7 +141,9 @@ class ScanTests(RepositoryTest):
         git(self.root, "checkout", "-q", "main")
         self.write("a.py", "x = 3  # noqa\n")
         self.commit()
-        subprocess.run(["git", "-C", str(self.root), "merge", "-q", "other"], capture_output=True)
+        merge = subprocess.run(["git", "-C", str(self.root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                                "merge", "-q", "other"], capture_output=True, text=True)
+        self.assertIn("CONFLICT", merge.stdout + merge.stderr)
         self.assertIn("a.py\0a.py", subprocess.run(["git", "-C", str(self.root), "ls-files", "-z", "-co"],
                                                     capture_output=True, text=True).stdout)
         self.assertEqual(len(ratchet.scan(self.root)["lint.noqa"]), 2)
