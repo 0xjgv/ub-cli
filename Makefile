@@ -22,8 +22,16 @@ test:
 	$(RUN) python -m unittest discover -s tests -v
 
 # scripts/ is release tooling, out of the gate's scope; see README.
+COVERAGE = $(RUN) --with coverage==7.17.4 python -m coverage
+COVERAGE_RC = --rcfile=scripts/gate-coverage.toml
+GATE_COVERAGE = mkdir -p target/coverage/python && rm -f target/coverage/python/.coverage-gate* \
+	&& $(COVERAGE) run $(COVERAGE_RC) -m unittest discover -s tests -q \
+	&& $(COVERAGE) combine $(COVERAGE_RC) -q \
+	&& $(COVERAGE) lcov $(COVERAGE_RC) -q -o target/coverage/python/lcov.info
+
 gate:
-	$(RUN) ub check -s src --test-command '$(RUN) python -m unittest discover -s tests -q'
+	$(RUN) ub check -s src --coverage-command '$(GATE_COVERAGE)' \
+	    --test-command '$(RUN) python -m unittest discover -s tests -q'
 
 build:
 	$(UV) build --wheel --python $(PYTHON_VERSION)

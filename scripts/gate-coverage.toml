@@ -1,0 +1,7 @@
+# Coverage for `make gate`. The hook and init tests run ub in child processes,
+# so the gate measures subprocesses and combines their data before the report.
+[tool.coverage.run]
+patch = ["subprocess"]
+parallel = true
+source = ["src"]
+data_file = "target/coverage/python/.coverage-gate"

@@ -26,6 +26,9 @@ or otherwise edit `.ub/` unless the user asks.
 """
 
 
+COMMAND_FLAGS = ("coverage_command", "test_command", "max_workers")
+
+
 def git(root: Path, *args: str) -> str:
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
     if result.returncode:
@@ -46,13 +49,21 @@ def local_file(root: Path, name: str) -> Path:
     return path
 
 
+def appended(text: str, block: str) -> str:
+    """`block` after `text`, separated by a blank line."""
+
+    if not text:
+        return block
+    return text + ("\n" if text.endswith("\n") else "\n\n") + block
+
+
 def managed_block(text: str, body: str, *, markdown: bool) -> str:
     start, end = (("<!-- ub:begin -->", "<!-- ub:end -->") if markdown
                   else ("# ub:begin", "# ub:end"))
     block = f"{start}\n{body.rstrip()}\n{end}\n"
     if start not in text and end not in text:
-        return text + ("\n\n" if text and not text.endswith("\n") else "\n" if text else "") + block
-    if text.count(start) != 1 or text.count(end) != 1 or text.index(start) > text.index(end):
+        return appended(text, block)
+    if text.count(start) != 1 or text.count(end) != 1 or end in text.split(start, 1)[0]:
         raise ValueError("Malformed UB markers; repair the ub:begin/ub:end block first.")
     before, rest = text.split(start, 1)
     _, after = rest.split(end, 1)
@@ -77,38 +88,39 @@ def write_file(path: Path, data: str, mode: int | None = None) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def initialize(options) -> None:
-    from ub_cli.ratchet import ratchet_file, render, scan, tally, toplevel
+def check_command(root: Path, options) -> list[str]:
+    """`ub check` with the options' source roots and commands as literal arguments."""
 
-    root = options.root.resolve()
-    if not root.is_dir():
-        raise ValueError(f"Project root is not a directory: {root}")
     command = ["ub", "check"]
     for source in options.source_root:
         path = (root / source).resolve()
         if not path.is_relative_to(root) or not path.is_dir():
             raise ValueError(f"Source root must be a directory inside the project: {source}")
         command.extend(["-s", "./" + path.relative_to(root).as_posix()])
-    for flag in ("coverage_command", "test_command", "max_workers"):
+    for flag in COMMAND_FLAGS:
         value = getattr(options, flag)
         if value is not None:
             command.extend(["--" + flag.replace("_", "-"), str(value)])
-    check = local_file(root, ".ub/check")
+    return command
+
+
+def check_script(root: Path, check: Path, options) -> str:
+    """The .ub/check script. An existing one is kept; explicit options must match it."""
+
     script = ('#!/bin/sh\nset -eu\n'
               'cd -- "$(CDPATH=\'\' cd -- "$(dirname -- "$0")/.." && pwd)"\n'
-              f'exec {shlex.join(command)} "$@"\n')
-    customized = options.source_root or any(getattr(options, flag) is not None for flag in
-                                            ("coverage_command", "test_command", "max_workers"))
-    if check.exists():
-        if customized and check.read_text() != script:
-            raise ValueError(".ub/check already differs; edit it directly to change the project commands.")
-        script = check.read_text()
-    pending = {check: (script, 0o755)}
-    top = toplevel(root)
-    ratchet = top and ratchet_file(top)
-    if ratchet and not ratchet.exists():
-        pending[ratchet] = (render(tally(scan(top)), []), None)
-    generated = [".ub/check"] + ([os.path.relpath(ratchet, root)] if ratchet else [])
+              f'exec {shlex.join(check_command(root, options))} "$@"\n')
+    customized = options.source_root or any(getattr(options, flag) is not None for flag in COMMAND_FLAGS)
+    if not check.exists():
+        return script
+    if customized and check.read_text() != script:
+        raise ValueError(".ub/check already differs; edit it directly to change the project commands.")
+    return check.read_text()
+
+
+def add_instructions(root: Path, pending: dict) -> None:
+    """Queue the managed blocks for AGENTS.md, CLAUDE.md, and .gitignore."""
+
     for name in ("AGENTS.md", "CLAUDE.md", ".gitignore"):
         path = local_file(root, name)
         text = path.read_text() if path.exists() else ""
@@ -117,6 +129,22 @@ def initialize(options) -> None:
         if path in pending and pending[path] != (content, None):
             raise ValueError(f"Setup files resolve to the same path: {path}")
         pending[path] = (content, None)
+
+
+def initialize(options) -> None:
+    from ub_cli.ratchet import ratchet_file, render, scan, tally, toplevel
+
+    root = options.root.resolve()
+    if not root.is_dir():
+        raise ValueError(f"Project root is not a directory: {root}")
+    check = local_file(root, ".ub/check")
+    pending = {check: (check_script(root, check, options), 0o755)}
+    top = toplevel(root)
+    ratchet = top and ratchet_file(top)
+    if ratchet and not ratchet.exists():
+        pending[ratchet] = (render(tally(scan(top)), []), None)
+    generated = [".ub/check"] + ([os.path.relpath(ratchet, root)] if ratchet else [])
+    add_instructions(root, pending)
     for path, (data, mode) in pending.items():
         write_file(path, data, mode)
     print(f"Ready: {root / '.ub/check'}")

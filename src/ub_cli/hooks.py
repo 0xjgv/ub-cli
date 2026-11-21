@@ -60,42 +60,62 @@ def hook_path(root: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def install_git(root: Path) -> None:
+def checked_hook(root: Path) -> Path:
+    """The pre-push hook path, refused when it is outside the repository or not a plain file."""
+
     hook = hook_path(root)
     common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     if not (hook.resolve().is_relative_to(root) or hook.resolve().is_relative_to(common)):
         raise ValueError("Git hooks directory is outside this repository. Integrate ./.ub/check in that hook manually.")
     if hook.is_symlink() or (hook.exists() and not hook.is_file()):
         raise ValueError(f"Cannot wrap a symlink or non-file hook: {hook}")
+    return hook
+
+
+def refresh_block(hook: Path, original: str) -> None:
+    """Keep an installed UB block, upgrading the previous release's block."""
+
+    if original.count(LEGACY_GIT_CHECK) == 1:
+        write_file(hook, original.replace(LEGACY_GIT_CHECK, GIT_CHECK), 0o755)
+        return
+    if original.count(GIT_CHECK) != 1:
+        raise ValueError(f"Edited UB hook block needs review: {hook}")
+    hook.chmod(0o755)
+
+
+def wrapped(hook: Path, original: str) -> str:
+    """The hook with the UB block first. An executable original must be a shell script."""
+
+    if not (hook.exists() and os.access(hook, os.X_OK)):
+        return "#!/bin/sh\n" + GIT_CHECK
+    first, _, rest = original.partition("\n")
+    interpreter = shlex.split(first[2:]) if first.startswith("#!") else []
+    if interpreter and Path(interpreter[0]).name == "env":
+        interpreter = interpreter[1:]
+    if not interpreter or Path(interpreter[0]).name not in {"sh", "bash", "dash", "ksh", "zsh"}:
+        raise ValueError(f"Existing hook is not a supported shell script: {hook}. Add ./.ub/check to it manually.")
+    # The original still runs at its original path, with its argv and stdin intact.
+    return first + "\n" + GIT_CHECK + rest
+
+
+def install_git(root: Path) -> None:
+    hook = checked_hook(root)
     original = hook.read_text() if hook.exists() else ""
     if "# ub:begin" in original or "# ub:end" in original:
-        if original.count(LEGACY_GIT_CHECK) == 1:
-            write_file(hook, original.replace(LEGACY_GIT_CHECK, GIT_CHECK), 0o755)
-            return
-        if original.count(GIT_CHECK) != 1:
-            raise ValueError(f"Edited UB hook block needs review: {hook}")
-        hook.chmod(0o755)
+        refresh_block(hook, original)
         return
     backup = hook.with_name("pre-push.ub-original")
     if backup.exists() or backup.is_symlink():
         raise ValueError(f"Existing hook backup needs review: {backup}")
-    script = "#!/bin/sh\n" + GIT_CHECK
-    if hook.exists() and os.access(hook, os.X_OK):
-        first, _, rest = original.partition("\n")
-        interpreter = shlex.split(first[2:]) if first.startswith("#!") else []
-        if interpreter and Path(interpreter[0]).name == "env":
-            interpreter = interpreter[1:]
-        if not interpreter or Path(interpreter[0]).name not in {"sh", "bash", "dash", "ksh", "zsh"}:
-            raise ValueError(f"Existing hook is not a supported shell script: {hook}. Add ./.ub/check to it manually.")
-        # The original still runs at its original path, with its argv and stdin intact.
-        script = first + "\n" + GIT_CHECK + rest
+    script = wrapped(hook, original)
     if hook.exists():
         os.link(hook, backup)
     write_file(hook, script, 0o755)
 
 
-def install_agent(root: Path, target: str, timeout: int) -> None:
-    path = local_file(root, AGENT_FILES[target])
+def stop_groups(path: Path) -> tuple[dict, list]:
+    """The settings in `path` and their Stop hook groups, created when absent."""
+
     data = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object in {path}")
@@ -105,20 +125,36 @@ def install_agent(root: Path, target: str, timeout: int) -> None:
     groups = hooks.setdefault("Stop", [])
     if not isinstance(groups, list):
         raise ValueError(f"Expected a Stop array in {path}")
-    command = (f"ub hooks run stop --timeout {timeout} || "
-               "{ printf '%s\\n' 'UB hook could not start. Ensure ub is installed and on PATH.' >&2; exit 2; }")
-    handler = {"type": "command", "command": command, "timeout": timeout + 10}
+    return data, groups
+
+
+def installed_handler(path: Path, groups: list) -> dict | None:
+    """The existing UB Stop handler, if any. Malformed groups and handlers are refused."""
+
     for group in groups:
         if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
             raise ValueError(f"Invalid Stop hook group in {path}")
         for existing in group["hooks"]:
             if not isinstance(existing, dict):
                 raise ValueError(f"Invalid Stop hook handler in {path}")
-            existing_command = existing.get("command")
-            if existing.get("type") == "command" and isinstance(existing_command, str) and existing_command.startswith("ub hooks run stop --timeout "):
-                if existing != handler:
-                    raise ValueError(f"UB hook already differs in {path}; edit it directly.")
-                return
+            command = existing.get("command")
+            if (existing.get("type") == "command" and isinstance(command, str)
+                    and command.startswith("ub hooks run stop --timeout ")):
+                return existing
+    return None
+
+
+def install_agent(root: Path, target: str, timeout: int) -> None:
+    path = local_file(root, AGENT_FILES[target])
+    data, groups = stop_groups(path)
+    command = (f"ub hooks run stop --timeout {timeout} || "
+               "{ printf '%s\\n' 'UB hook could not start. Ensure ub is installed and on PATH.' >&2; exit 2; }")
+    handler = {"type": "command", "command": command, "timeout": timeout + 10}
+    existing = installed_handler(path, groups)
+    if existing is not None:
+        if existing != handler:
+            raise ValueError(f"UB hook already differs in {path}; edit it directly.")
+        return
     groups.append({"hooks": [handler]})
     write_file(path, json.dumps(data, indent=2) + "\n")
 
@@ -140,23 +176,27 @@ def install(options) -> int:
     return 0
 
 
+def descendants(root: int) -> set[int]:
+    """`root` and every process below it, from the system process table."""
+
+    # int() reads the byte strings directly.
+    table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="], capture_output=True, check=True)
+    parents = {int(pid): int(parent) for pid, parent in (line.split() for line in table.stdout.splitlines())}
+    found = {root}
+    while True:
+        children = {pid for pid, parent in parents.items() if parent in found}
+        if not children - found:
+            return found
+        found.update(children)
+
+
 def terminate_check(process) -> None:
     """Stop the check and descendants, including tests that start new sessions."""
     stopped = set()
     try:
         os.killpg(process.pid, signal.SIGSTOP)
         while True:
-            # int() reads the byte strings directly.
-            table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="], capture_output=True, check=True)
-            parents = {int(pid): int(parent) for pid, parent in
-                       (line.split() for line in table.stdout.splitlines())}
-            descendants = {process.pid}
-            while True:
-                children = {pid for pid, parent in parents.items() if parent in descendants}
-                if not children - descendants:
-                    break
-                descendants.update(children)
-            new = descendants - stopped
+            new = descendants(process.pid) - stopped
             if not new:
                 break
             for pid in new:
@@ -256,7 +296,7 @@ def run(argv: list[str]) -> int:
     except SystemExit as exc:
         return int(exc.code)
     try:
-        if getattr(options, "timeout", 1) < 1:
+        if options.timeout < 1:
             raise ValueError("--timeout requires a positive integer")
         if options.command == "install":
             return install(options)
