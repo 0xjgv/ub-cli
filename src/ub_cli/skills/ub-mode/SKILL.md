@@ -30,6 +30,9 @@ Every time you are asked to make a change follow:
 * A skill describes the workflow; installed hooks and required CI checks enforce
   it. Do not weaken checks or bypass hooks. Report remaining failures, missing
   tools, and checks that could not finish without claiming success.
+* `.ub/ratchet` caps lint suppressions, coverage exclusions, and skipped tests.
+  When `ub check` reports a count above it, remove the new escape hatch. Never
+  run `ub ratchet --update` or edit `.ub/` unless the user asks.
 * Keep fixes within the requested task. This skill does not authorize unrelated
   cleanup, commits, or publication.
 

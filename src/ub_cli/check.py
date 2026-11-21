@@ -12,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from ub_cli.ratchet import gate as ratchet_gate
 from ub_cli.vendor.crapper.coverage import _profile_segments, load_bundle
 from ub_cli.vendor.crapper.crap import make_entry, sort_entries
 from ub_cli.vendor.crapper.discover import iter_source_files, language_of
@@ -498,17 +499,21 @@ def _mutation_gate(root: Path, files, bundle, runner, baselines, options):
     return failures, incomplete
 
 
-def _gates(root: Path, files, duplicates_files, options, coverage_log: str, ran) -> int:
+def _gates(root: Path, files, duplicates_files, options, coverage_log: str, ran, held) -> int:
+    """Run the CRAP, duplication, and mutation gates after the ratchet's `held` results."""
+
     runner = FocusedRunner()
     baselines = _baselines(root, files, runner, options.test_command)
     bundle = load_bundle(root)
     failures, incomplete = _static_gates(
         root, files, duplicates_files, bundle, options, coverage_log, ran
     )
+    held_failures, held_incomplete = held
+    failures = held_failures + failures
     if incomplete:
-        return _verdict(failures, incomplete)
+        return _verdict(failures, held_incomplete + incomplete)
     mutation_failures, incomplete = _mutation_gate(root, files, bundle, runner, baselines, options)
-    return _verdict(failures + mutation_failures, incomplete)
+    return _verdict(failures + mutation_failures, held_incomplete + incomplete)
 
 
 def _check(options, ran: list[str]) -> int:
@@ -517,16 +522,17 @@ def _check(options, ran: list[str]) -> int:
         raise ValueError(f"Project root is not a directory: {root}")
     for path in restore_backups(root):
         print(f"Restored {path} from an interrupted mutation.", file=sys.stderr)
+    held = ratchet_gate(root)
     roots = [(root / source).resolve() for source in options.source_root] or [root]
     files = iter_source_files(roots)
     duplicates_files = dry_files(roots)
     if not files and not duplicates_files:
         raise ValueError("No supported source files found.")
     if options.use_existing_coverage:
-        return _gates(root, files, duplicates_files, options, "", ran)
+        return _gates(root, files, duplicates_files, options, "", ran, held)
     coverage_log, stale = _generate_coverage(root, files, options)
     with _set_aside(stale):
-        return _gates(root, files, duplicates_files, options, coverage_log, ran)
+        return _gates(root, files, duplicates_files, options, coverage_log, ran, held)
 
 
 def run(argv: list[str] | None = None) -> int:

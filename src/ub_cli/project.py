@@ -1,6 +1,7 @@
 """Set up a repository's shared quality command and agent instructions."""
 
 import argparse
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -18,6 +19,9 @@ The command contains this repository's source scope and coverage/test commands.
 Use `ub COMMAND --help` for focused diagnostics. `--changed` selects working-tree
 changes, not the committed changes in a pull request.
 Do not weaken the check, skip hooks, or claim success without a passing run.
+`.ub/ratchet` caps lint suppressions, coverage exclusions, and skipped tests;
+remove the new escape hatch instead. Never run `ub ratchet --update` or edit
+`.ub/` unless the user asks.
 """
 
 
@@ -73,6 +77,8 @@ def write_file(path: Path, data: str, mode: int | None = None) -> None:
 
 
 def initialize(options) -> None:
+    from ub_cli.ratchet import ratchet_file, render, scan, tally, toplevel
+
     root = options.root.resolve()
     if not root.is_dir():
         raise ValueError(f"Project root is not a directory: {root}")
@@ -97,6 +103,11 @@ def initialize(options) -> None:
             raise ValueError(".ub/check already differs; edit it directly to change the project commands.")
         script = check.read_text()
     pending = {check: (script, 0o755)}
+    top = toplevel(root)
+    ratchet = top and ratchet_file(top)
+    if ratchet and not ratchet.exists():
+        pending[ratchet] = (render(tally(scan(top))), None)
+    generated = [".ub/check"] + ([os.path.relpath(ratchet, root)] if ratchet else [])
     for name in ("AGENTS.md", "CLAUDE.md", ".gitignore"):
         path = local_file(root, name)
         text = path.read_text() if path.exists() else ""
@@ -108,7 +119,7 @@ def initialize(options) -> None:
     for path, (data, mode) in pending.items():
         write_file(path, data, mode)
     print(f"Ready: {root / '.ub/check'}")
-    print("Review and commit .ub/check, AGENTS.md, CLAUDE.md, and .gitignore.")
+    print(f"Review and commit {', '.join(generated)}, AGENTS.md, CLAUDE.md, and .gitignore.")
     print("Run ./.ub/check locally and in CI after installing the project's test and coverage tools.")
     print("Optional: ub hooks install (Git pre-push), or --target codex / --target claude.")
 

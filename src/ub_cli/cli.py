@@ -1,5 +1,6 @@
 """Dispatch ub commands to the engines and the ub-only tools."""
 
+from importlib import import_module
 from importlib.metadata import version
 import sys
 
@@ -8,7 +9,8 @@ HELP = """Usage: ub COMMAND [options]
   crap     Score function complexity and test coverage
   dry      Find structurally similar code
   mutate   Test whether mutations are caught
-  check    Enforce all three ub-mode gates
+  check    Enforce all three ub-mode gates and the escape-hatch ratchet
+  ratchet  Count escape hatches against .ub/ratchet, or guard .ub/ changes
   init     Set up repository quality checks and agent instructions
   hooks    Install Git and agent hooks for the repository
   skill    Install a bundled agent skill
@@ -19,6 +21,9 @@ Run ub COMMAND --help for command-specific options.
 """
 
 ENGINES = {"crap": "crapper", "dry": "dryer", "mutate": "mutator"}
+# Each command's module, imported on use.
+COMMANDS = {"update": "update", "skill": "skill", "check": "check", "ratchet": "ratchet",
+            "init": "project", "hooks": "hooks"}
 
 
 def run(argv: list[str]) -> int:
@@ -44,20 +49,10 @@ def run(argv: list[str]) -> int:
         from ub_cli.engines import run as run_engine
 
         return run_engine(command, ENGINES[command], args)
-    if command == "update":
-        from ub_cli.update import run as execute
-    elif command == "skill":
-        from ub_cli.skill import run as execute
-    elif command == "check":
-        from ub_cli.check import run as execute
-    elif command == "init":
-        from ub_cli.project import run as execute
-    elif command == "hooks":
-        from ub_cli.hooks import run as execute
-    else:
+    if command not in COMMANDS:
         print(f"Unknown command: {command}\nRun ub --help for usage.", file=sys.stderr)
         return 2
-    return execute(args)
+    return import_module(f"ub_cli.{COMMANDS[command]}").run(args)
 
 
 def main() -> None:
