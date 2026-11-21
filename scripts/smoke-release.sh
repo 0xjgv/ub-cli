@@ -45,7 +45,9 @@ git init -q
 "$ub" hooks install --target git --target codex --target claude
 .git/hooks/pre-push origin unused </dev/null
 printf '{"cwd":"%s","stop_hook_active":false}\n' "$work" | "$ub" hooks run stop > hook-result.json
-grep -qx '{}' hook-result.json
+# The uncommitted .ub/ earns a notice to the human, not a block.
+grep -q 'review .ub/ before committing' hook-result.json
+if grep -q '"decision"' hook-result.json; then exit 1; fi
 # A test-only change must turn the previously killed mutant into a survivor.
 printf '%s\n' 'import unittest' 'class Tests(unittest.TestCase):' '    def test_weak(self): pass' > test_arithmetic.py
 status=0

@@ -64,6 +64,16 @@ class ProjectInitTests(RepositoryTests):
         self.initialize()
         self.assertEqual(before, [(p.read_bytes(), p.stat().st_mtime_ns) for p in files])
 
+    def test_writes_the_ratchet_once_and_never_overwrites_it(self):
+        (self.root / "t.py").write_text("x = 1  # noqa\n")
+        self.initialize()
+        ratchet = self.root / ".ub/ratchet"
+        self.assertIn("\nlint.noqa 1\n", ratchet.read_text())
+        ratchet.write_text("lint.noqa 5\n")
+        self.initialize()
+        self.assertEqual(ratchet.read_text(), "lint.noqa 5\n")
+        self.assertIn("ub ratchet --update", (self.root / "AGENTS.md").read_text())
+
     def test_script_forwards_literal_commands_scope_and_runtime_arguments(self):
         source = "src ' $cash"
         (self.root / source).mkdir()
@@ -243,8 +253,25 @@ class HookTests(RepositoryTests):
         self.executable(check, "touch ran\nexit 0\n")
         self.assertNotIn("decision", self.stop({"cwd": str(self.root), "stop_hook_active": True}))
         self.assertFalse((self.root / "ran").exists())
-        self.assertEqual(self.stop(), {})
+        self.assertNotIn("decision", self.stop())
         self.assertTrue((self.root / "ran").exists())
+
+    def test_stop_warns_the_human_about_uncommitted_ub_changes(self):
+        check = self.initialize()
+        self.executable(check, "exit 0\n")
+        notice = "ub config has uncommitted changes: review .ub/ before committing."
+        guard = "UB continuation guard: report any unresolved check failures."
+        active = {"cwd": str(self.root), "stop_hook_active": True}
+        self.assertEqual(self.stop(), {"systemMessage": notice})
+        self.assertEqual(self.stop(active), {"systemMessage": f"{guard} {notice}"})
+        self.git("add", ".ub")
+        self.git("-c", "user.name=UB Test", "-c", "user.email=test@example.invalid",
+                 "commit", "--no-gpg-sign", "-qm", "ub")
+        self.assertEqual(self.stop(), {})
+        self.assertEqual(self.stop(active), {"systemMessage": guard})
+        self.executable(check, "exit 1\n")
+        failure = self.stop()
+        self.assertEqual((failure["decision"], failure["systemMessage"]), ("block", notice))
 
     def test_stop_missing_check_bad_event_and_timeout_block(self):
         self.assertEqual(self.stop()["decision"], "block")
@@ -280,6 +307,61 @@ class HookTests(RepositoryTests):
         self.git("push", str(remote), "HEAD:refs/heads/main")
         self.assertIn("refs/heads/main", self.git("ls-remote", str(remote)))
 
+    def test_push_that_raises_the_ratchet_is_refused_unless_a_human_allows_it(self):
+        check = self.initialize()
+        self.executable(check, "exit 0\n")
+        remote = self.root.parent / "remote.git"
+        self.git("init", "--bare", "-q", str(remote))
+        self.git("remote", "add", "origin", str(remote))
+        commit = ["-c", "user.name=UB Test", "-c", "user.email=test@example.invalid",
+                  "commit", "--no-gpg-sign", "-qam", "change"]
+        self.git("add", ".")
+        self.git(*commit)
+        self.git("push", "-qu", "origin", "HEAD:main")
+        self.install()
+        ratchet = self.root / ".ub/ratchet"
+        ratchet.write_text(ratchet.read_text().replace("lint.noqa 0", "lint.noqa 1"))
+        self.git(*commit)
+        refused = self.command(["git", "push", "-q", "origin", "HEAD:main"])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("\n  .ub/ratchet raised lint.noqa: 0 -> 1\n", refused.stdout + refused.stderr)
+        allowed = self.command(["git", "push", "-q", "origin", "HEAD:main"],
+                               env=dict(self.env, UB_ALLOW_UB_CHANGE="1"))
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+
+    def test_push_guards_each_pushed_branch_not_the_checked_out_one(self):
+        check = self.initialize()
+        self.executable(check, "exit 0\n")
+        remote = self.root.parent / "remote.git"
+        self.git("init", "--bare", "-q", str(remote))
+        self.git("remote", "add", "origin", str(remote))
+        commit = ["-c", "user.name=UB Test", "-c", "user.email=test@example.invalid",
+                  "commit", "--no-gpg-sign", "-qam", "change"]
+        self.git("add", ".")
+        self.git(*commit)
+        self.git("push", "-q", "origin", "HEAD:main")
+        self.install()
+        self.git("checkout", "-qb", "tamper")
+        self.executable(check, "exit 0 # loosened\n")
+        self.git(*commit)
+        self.git("checkout", "-q", "-")
+        unguarded = self.command(["git", "push", "-q", "origin", "tamper"])
+        self.assertNotEqual(unguarded.returncode, 0)
+        self.assertIn("run: git remote set-head origin --auto", unguarded.stderr)
+        self.git("remote", "set-head", "origin", "main")
+        refused = self.command(["git", "push", "-q", "origin", "tamper"])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("\n  .ub/check changed\n", refused.stdout)
+
+    def test_install_upgrades_the_previous_hook_block(self):
+        from ub_cli.hooks import GIT_CHECK, LEGACY_GIT_CHECK
+
+        self.initialize()
+        hook = self.root / ".git/hooks/pre-push"
+        self.executable(hook, LEGACY_GIT_CHECK + "echo original\n")
+        self.install()
+        self.assertEqual(hook.read_text(), "#!/bin/sh\n" + GIT_CHECK + "echo original\n")
+
     def test_hook_install_works_from_linked_worktree_subdirectory(self):
         self.git("-c", "user.name=UB Test", "-c", "user.email=test@example.invalid",
                  "commit", "--allow-empty", "--no-gpg-sign", "-qm", "fixture")
@@ -314,3 +396,51 @@ class HookTests(RepositoryTests):
         if status.returncode == 0 and not status.stdout.strip().startswith("Z"):
             os.killpg(pid, signal.SIGKILL)
             self.fail(f"Detached test process {pid} survived: {status.stdout}")
+
+
+class StopDecisionTests(RepositoryTests):
+    def test_decision_covers_continuation_pass_fail_and_bad_events(self):
+        from ub_cli.hooks import stop_decision
+
+        check = self.initialize()
+        self.assertEqual(stop_decision({"stop_hook_active": True}, 5),
+                         {"systemMessage": "UB continuation guard: report any unresolved check failures."})
+        self.executable(check, "exit 0\n")
+        self.assertEqual(stop_decision({"cwd": str(self.root)}, 5), {})
+        self.executable(check, "echo broken\nexit 3\n")
+        failure = stop_decision({"cwd": str(self.root)}, 5)
+        self.assertEqual(failure["decision"], "block")
+        self.assertTrue(failure["reason"].startswith("UB checks failed (exit 3)."))
+        self.assertIn("broken", failure["reason"])
+        for payload in ([], {"cwd": ""}, {"cwd": 1}):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                stop_decision(payload, 5)
+        self.executable(check, "sleep 20\n")
+        self.assertIn("exceeded 1s", stop_decision({"cwd": str(self.root)}, 1)["reason"])
+
+    def test_changed_sees_staged_untracked_and_hidden_edits(self):
+        from ub_cli.hooks import ub_changed
+
+        commit = ["-c", "user.name=UB Test", "-c", "user.email=test@example.invalid",
+                  "commit", "--no-gpg-sign", "-qm", "ub"]
+        payload = {"cwd": str(self.root)}
+        self.assertFalse(ub_changed(payload))
+        check = self.initialize()
+        self.assertTrue(ub_changed(payload))
+        self.git("add", ".ub")
+        self.git(*commit)
+        self.assertFalse(ub_changed(payload))
+        (self.root / ".ub/notes").write_text("x")
+        self.assertTrue(ub_changed(payload))
+        (self.root / ".ub/notes").unlink()
+        original = check.read_text()
+        check.write_text(original + "# staged\n")
+        self.git("add", ".ub/check")
+        check.write_text(original)
+        self.assertTrue(ub_changed(payload))
+        self.git("reset", "-q", ".ub/check")
+        self.git("update-index", "--assume-unchanged", ".ub/check")
+        check.write_text(original + "# hidden\n")
+        self.assertTrue(ub_changed(payload))
+        for bad in (None, {}, {"cwd": 1}, {"cwd": str(self.root.parent)}):
+            self.assertFalse(ub_changed(bad))
