@@ -1,6 +1,7 @@
 """Count escape hatches and fail when any count grows past .ub/ratchet."""
 
 import argparse
+from fnmatch import fnmatchcase
 import io
 from itertools import accumulate
 import os
@@ -9,6 +10,7 @@ import re
 import subprocess
 import sys
 import tokenize
+from typing import NamedTuple
 
 from ub_cli.project import git, local_file, write_file
 
@@ -16,7 +18,10 @@ from ub_cli.project import git, local_file, write_file
 RATCHET = ".ub/ratchet"
 CHECK = ".ub/check"
 OVERRIDE = "UB_ALLOW_UB_CHANGE"
-HEADER = "# Escape-hatch counts. ub check fails when one grows. Only a human lowers or raises them.\n"
+HEADER = ("# Escape-hatch counts; ub check fails when one grows. `ub ratchet --lower` lowers them.\n"
+          "# Only a human raises a count or adds an `exclude GLOB` line, with `ub ratchet --update`.\n")
+ACCEPT = ("  Remove the new escape hatches. To accept them instead, a human runs ub ratchet --update,\n"
+          f"  commits {RATCHET}, and approves the raise: {OVERRIDE}=1 to push, the approval label in CI.")
 REGULAR = ("100644", "100755")
 
 PYTHON = (".py", ".pyi")
@@ -61,11 +66,19 @@ def toplevel(root: Path) -> Path | None:
         return None
 
 
-def scan(top: Path) -> dict[str, list[str]]:
-    """Each kind's `file:line` matches in the files Git tracks or would track under `top`."""
+class Baseline(NamedTuple):
+    counts: dict[str, int]
+    excludes: list[str]
+
+
+def scan(top: Path, excludes=()) -> dict[str, list[str]]:
+    """Each kind's `file:line` matches in the files Git tracks or would track under `top`.
+
+    Files matching an `excludes` glob are skipped; `*` crosses directories.
+    """
 
     command = ["git", "-C", str(top), "ls-files", "-z", "-co", "--exclude-standard"]
-    listing = subprocess.run(command, capture_output=True)
+    listing = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if listing.returncode:
         raise ValueError(f"git ls-files failed: {listing.stderr.decode(errors='replace').strip()}")
     found = {key: [] for key, _, _ in RULES}
@@ -73,6 +86,8 @@ def scan(top: Path) -> dict[str, list[str]]:
     for name in dict.fromkeys(filter(None, listing.stdout.split(b"\0"))):
         shown = name.decode(errors="replace")
         rules = [(key, pattern) for key, suffixes, pattern in RULES if shown.endswith(suffixes)]
+        if any(fnmatchcase(shown, glob) for glob in excludes):
+            continue
         path = top / os.fsdecode(name)
         # A path that resolves elsewhere passes through a symlink, which is not followed.
         if rules and path.is_file() and path.resolve() == path:
@@ -122,20 +137,24 @@ def tally(found: dict[str, list[str]]) -> dict[str, int]:
     return {key: len(places) for key, places in found.items()}
 
 
-def parse(text: str) -> dict[str, int]:
-    counts = {}
+def parse(text: str) -> Baseline:
+    baseline = Baseline({}, [])
     for number, line in enumerate(text.splitlines(), 1):
         words = line.split()
         if not words or words[0].startswith("#"):
             continue
-        if len(words) != 2 or not words[1].isdigit():
-            raise ValueError(f"{RATCHET} line {number} is not 'key count': {line}")
-        counts[words[0]] = int(words[1])
-    return counts
+        if len(words) == 2 and words[0] == "exclude":
+            baseline.excludes.append(words[1])
+        elif len(words) == 2 and words[1].isdigit():
+            baseline.counts[words[0]] = int(words[1])
+        else:
+            raise ValueError(f"{RATCHET} line {number} is not 'key count' or 'exclude GLOB': {line}")
+    return baseline
 
 
-def render(counts: dict[str, int]) -> str:
-    return HEADER + "".join(f"{key} {counts[key]}\n" for key in sorted(counts))
+def render(counts: dict[str, int], excludes: list[str]) -> str:
+    return (HEADER + "".join(f"exclude {glob}\n" for glob in excludes)
+            + "".join(f"{key} {counts[key]}\n" for key in sorted(counts)))
 
 
 def grown(current: dict[str, int], baseline: dict[str, int]) -> list[tuple[str, int, int]]:
@@ -161,7 +180,7 @@ def gate(root: Path) -> tuple[list[str], list[str]]:
     present = os.path.lexists(top / RATCHET)
     try:
         baseline = parse(ratchet_file(top).read_text()) if present else None
-        found = scan(top)
+        found = scan(top, baseline.excludes if baseline else ())
     except (OSError, ValueError) as exc:
         if present:
             print("Ratchet: incomplete.")
@@ -172,29 +191,79 @@ def gate(root: Path) -> tuple[list[str], list[str]]:
     if baseline is None:
         print(f"Ratchet: {sum(counts.values())} escape hatches, report only without {RATCHET}.")
         return [], []
-    rows = grown(counts, baseline)
+    rows = grown(counts, baseline.counts)
     if not rows:
-        lower = any(counts.get(key, 0) < count for key, count in baseline.items())
-        hint = "; a human can lower it with ub ratchet --update" if lower else ""
+        lower = any(counts.get(key, 0) < count for key, count in baseline.counts.items())
+        hint = "; lower it with ub ratchet --lower" if lower else ""
         print(f"Ratchet: {sum(counts.values())} escape hatches, none above {RATCHET}{hint}.")
         return [], []
-    # The ratchet stores counts, not locations, so every current match of a grown kind is listed.
-    print(f"Ratchet: {len(rows)} kinds above {RATCHET}, with every current match")
+    return report_growth(top, found, rows), []
+
+
+def report_growth(top: Path, found: dict[str, list[str]], rows) -> list[str]:
+    """Print each grown kind with its likely new matches. Return one failure per kind."""
+
+    print(f"Ratchet: {len(rows)} kinds above {RATCHET}")
+    recent = changed(top)
     failures = []
     for key, now, then in rows:
         failures.append(f"{key}: {now} > {then}")
         print(f"  {failures[-1]}")
-        print("".join(f"    {place}\n" for place in found[key]), end="")
-    return failures, []
+        shown = shown_places(found[key], recent)
+        print("".join(f"    {place}\n" for place in shown), end="")
+        if len(shown) < now:
+            print(f"    ... and {now - len(shown)} in files without uncommitted changes")
+    print(ACCEPT)
+    return failures
+
+
+def changed(top: Path) -> set[str] | None:
+    """Files with uncommitted changes, untracked ones included, or None when that is unknown."""
+
+    try:
+        names = (git(top, "diff", "--name-only", "-z", "HEAD") + "\0"
+                 + git(top, "ls-files", "-z", "-o", "--exclude-standard"))
+    except ValueError:
+        return None
+    return set(filter(None, names.split("\0")))
+
+
+def shown_places(places: list[str], recent: set[str] | None) -> list[str]:
+    """The matches in changed files, the likely new ones; all of them when there are none.
+
+    The ratchet stores counts, not locations, so it cannot say which match is new.
+    """
+
+    fresh = [place for place in places if place.rsplit(":", 1)[0] in (recent or ())]
+    return fresh or places
+
+
+def current(root: Path) -> tuple[Path, Baseline | None, dict[str, int]]:
+    """The worktree root, its baseline if any, and the counts under the baseline's excludes."""
+
+    top = toplevel(root)
+    if top is None:
+        raise ValueError("ub ratchet --update and --lower need a Git repository.")
+    path = ratchet_file(top)
+    baseline = parse(path.read_text()) if path.exists() else None
+    return top, baseline, tally(scan(top, baseline.excludes if baseline else ()))
 
 
 def update(root: Path) -> None:
-    top = toplevel(root)
-    if top is None:
-        raise ValueError("ub ratchet --update needs a Git repository.")
-    counts = tally(scan(top))
-    write_file(ratchet_file(top), render(counts))
+    top, baseline, counts = current(root)
+    write_file(ratchet_file(top), render(counts, baseline.excludes if baseline else []))
     print(f"Wrote {top / RATCHET}: {sum(counts.values())} escape hatches.")
+
+
+def lower(root: Path) -> None:
+    """Lower each count to the current one. Never raises a count or adds an exclude."""
+
+    top, baseline, counts = current(root)
+    if baseline is None:
+        raise ValueError(f"No {RATCHET} to lower; a human creates it with ub ratchet --update.")
+    lowered = {key: min(count, counts.get(key, 0)) for key, count in baseline.counts.items()}
+    write_file(ratchet_file(top), render(lowered, baseline.excludes))
+    print(f"Lowered {sum(baseline.counts.values()) - sum(lowered.values())} escape hatches in {top / RATCHET}.")
 
 
 def entry(root: Path, revision: str, name: str) -> tuple[str, str] | None:
@@ -225,7 +294,7 @@ def uncommitted(root: Path) -> list[str]:
     return [name for name in (CHECK, RATCHET) if worktree_entry(root, name) != head.get(name)]
 
 
-def committed_counts(root: Path, item: tuple[str, str] | None) -> dict[str, int] | None:
+def committed_baseline(root: Path, item: tuple[str, str] | None) -> Baseline | None:
     if item is None:
         return None
     if item[0] not in REGULAR:
@@ -240,12 +309,14 @@ def tampering(root: Path, start: str, head: str) -> list[str]:
     check = entry(root, start, CHECK)
     if check is not None and check != entry(root, head, CHECK):
         problems.append(f"{CHECK} changed")
-    before = committed_counts(root, entry(root, start, RATCHET))
-    after = committed_counts(root, entry(root, head, RATCHET))
+    before = committed_baseline(root, entry(root, start, RATCHET))
+    after = committed_baseline(root, entry(root, head, RATCHET))
     if before is not None and after is None:
         problems.append(f"{RATCHET} was deleted")
     elif before is not None:
-        problems += [f"{RATCHET} raised {key}: {then} -> {now}" for key, now, then in grown(after, before)]
+        problems += [f"{RATCHET} raised {key}: {then} -> {now}"
+                     for key, now, then in grown(after.counts, before.counts)]
+        problems += [f"{RATCHET} added exclude {glob}" for glob in after.excludes if glob not in before.excludes]
     return problems
 
 
@@ -282,7 +353,9 @@ def arguments(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="ub ratchet", description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--update", action="store_true", help=f"Write the current counts to {RATCHET}")
+    mode.add_argument("--update", action="store_true",
+                      help=f"Write the current counts to {RATCHET}, raising any that grew (a human's call)")
+    mode.add_argument("--lower", action="store_true", help=f"Lower the counts in {RATCHET}; never raises one")
     mode.add_argument("--guard", action="store_true",
                       help="Fail when commits change .ub/check, delete .ub/ratchet, or raise a count")
     parser.add_argument("--base", metavar="REF", help="Compare with the merge base of the head and REF (--guard)")
@@ -302,8 +375,8 @@ def run(argv: list[str]) -> int:
         root = toplevel(options.root) or options.root.resolve()
         if options.guard:
             return guard(root, options.base, options.head or "HEAD")
-        if options.update:
-            update(root)
+        if options.update or options.lower:
+            (update if options.update else lower)(root)
             return 0
         return check(root)
     except (OSError, ValueError) as exc:

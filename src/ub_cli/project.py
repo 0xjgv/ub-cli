@@ -20,8 +20,9 @@ Use `ub COMMAND --help` for focused diagnostics. `--changed` selects working-tre
 changes, not the committed changes in a pull request.
 Do not weaken the check, skip hooks, or claim success without a passing run.
 `.ub/ratchet` caps lint suppressions, coverage exclusions, and skipped tests;
-remove the new escape hatch instead. Never run `ub ratchet --update` or edit
-`.ub/` unless the user asks.
+remove the new escape hatch instead. After removing escape hatches, run
+`ub ratchet --lower` and commit `.ub/ratchet`. Never run `ub ratchet --update`
+or otherwise edit `.ub/` unless the user asks.
 """
 
 
@@ -106,7 +107,7 @@ def initialize(options) -> None:
     top = toplevel(root)
     ratchet = top and ratchet_file(top)
     if ratchet and not ratchet.exists():
-        pending[ratchet] = (render(tally(scan(top))), None)
+        pending[ratchet] = (render(tally(scan(top)), []), None)
     generated = [".ub/check"] + ([os.path.relpath(ratchet, root)] if ratchet else [])
     for name in ("AGENTS.md", "CLAUDE.md", ".gitignore"):
         path = local_file(root, name)

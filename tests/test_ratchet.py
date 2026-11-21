@@ -169,7 +169,7 @@ class ScanTests(RepositoryTest):
         (self.root / "pkg").symlink_to(self.root.parent / "elsewhere")
         blob = git(self.root, "hash-object", "-w", str(outside))
         subprocess.run([b"git", b"-C", bytes(self.root), b"update-index", b"--add", b"--cacheinfo",
-                        b"100644," + blob.encode() + b",caf\xe9.py"], check=True)
+                        b"100644," + blob.encode() + b",caf\xe9.py"], check=True, capture_output=True)
         self.assertEqual(ratchet.scan(self.root)["lint.noqa"], [])
 
     def test_outside_git_skips_and_listing_errors_are_incomplete(self):
@@ -192,7 +192,7 @@ class GateTests(RepositoryTest):
         self.assertEqual(call(ratchet.gate, self.root)[:2],
                          (([], []), "Ratchet: 2 escape hatches, report only without .ub/ratchet.\n"))
 
-    def test_growth_fails_with_every_current_location_from_any_directory(self):
+    def test_growth_without_commits_lists_every_location_from_any_directory(self):
         self.write("t.py", "x  # noqa\n")
         call(ratchet.update, self.root)
         self.write("t.py", "x  # noqa\n@unittest.skip('x')\n" + "z  # noqa\n" * 20)
@@ -201,9 +201,45 @@ class GateTests(RepositoryTest):
         self.assertEqual((failures, incomplete), (["lint.noqa: 22 > 1", "skip.unittest: 1 > 0"], []))
         noqa = "".join(f"    {place}\n" for place in ["sub/u.py:1", "t.py:1"]
                        + [f"t.py:{line}" for line in range(3, 23)])
-        self.assertEqual(output, "Ratchet: 2 kinds above .ub/ratchet, with every current match\n"
+        self.assertEqual(output, "Ratchet: 2 kinds above .ub/ratchet\n"
                          f"  lint.noqa: 22 > 1\n{noqa}"
-                         "  skip.unittest: 1 > 0\n    t.py:2\n")
+                         "  skip.unittest: 1 > 0\n    t.py:2\n" + ratchet.ACCEPT + "\n")
+
+    def test_growth_lists_matches_in_changed_files_first(self):
+        self.write("old.py", "x  # noqa\n" * 3)
+        self.write("edited.py", "x = 1\n")
+        call(ratchet.update, self.root)
+        self.commit()
+        self.write("edited.py", "x = 1  # noqa\n")
+        self.write("new.py", "y  # noqa\n")
+        (failures, _), output, _ = call(ratchet.gate, self.root)
+        self.assertEqual(failures, ["lint.noqa: 5 > 3"])
+        listed = output.split("  lint.noqa: 5 > 3\n")[1].split(ratchet.ACCEPT)[0].splitlines()
+        self.assertEqual(sorted(listed[:2]), ["    edited.py:1", "    new.py:1"])
+        self.assertEqual(listed[2:], ["    ... and 3 in files without uncommitted changes"])
+        self.commit()
+        _, output, _ = call(ratchet.gate, self.root)
+        self.assertIn("    old.py:3\n" + ratchet.ACCEPT, output)
+        with patch("ub_cli.ratchet.git", side_effect=ValueError):
+            self.assertIsNone(ratchet.changed(self.root))
+
+    def test_excluded_files_are_not_counted_and_lower_never_raises(self):
+        self.write("vendor/lib/a.py", "x  # noqa\n")
+        self.write("src/b.py", "x  # noqa\ny  # noqa\n")
+        self.write(".ub/ratchet", "exclude vendor/*\nlint.noqa 3\nskip.js 0\nretired.kind 2\n")
+        self.assertEqual(ratchet.scan(self.root, ["vendor/*"])["lint.noqa"], ["src/b.py:1", "src/b.py:2"])
+        self.assertEqual(call(ratchet.gate, self.root)[1],
+                         "Ratchet: 2 escape hatches, none above .ub/ratchet; lower it with ub ratchet --lower.\n")
+        self.write("src/c.js", "it.only('x')\n")
+        _, output, _ = call(ratchet.lower, self.root)
+        self.assertEqual(output, f"Lowered 3 escape hatches in {self.root / '.ub/ratchet'}.\n")
+        self.assertEqual(ratchet.parse((self.root / ".ub/ratchet").read_text()),
+                         ratchet.Baseline({"lint.noqa": 2, "retired.kind": 0, "skip.js": 0}, ["vendor/*"]))
+        call(ratchet.update, self.root)
+        self.assertEqual(ratchet.parse((self.root / ".ub/ratchet").read_text()).excludes, ["vendor/*"])
+        (self.root / ".ub/ratchet").unlink()
+        with self.assertRaisesRegex(ValueError, "No .ub/ratchet to lower"):
+            ratchet.lower(self.root)
 
     def test_equal_and_lower_counts_pass(self):
         self.write("t.py", "x  # noqa\n")
@@ -213,12 +249,12 @@ class GateTests(RepositoryTest):
         self.write(".ub/ratchet", "lint.noqa 1\nretired.kind 1\n")
         self.assertEqual(call(ratchet.gate, self.root)[:2],
                          (([], []), "Ratchet: 1 escape hatches, none above .ub/ratchet; "
-                                    "a human can lower it with ub ratchet --update.\n"))
+                                    "lower it with ub ratchet --lower.\n"))
 
     def test_malformed_or_symlinked_ratchet_is_incomplete(self):
         self.write(".ub/ratchet", "lint.noqa many\n")
         (_, incomplete), _, _ = call(ratchet.gate, self.root)
-        self.assertEqual(incomplete, ["Ratchet: .ub/ratchet line 1 is not 'key count': lint.noqa many"])
+        self.assertEqual(incomplete, ["Ratchet: .ub/ratchet line 1 is not 'key count' or 'exclude GLOB': lint.noqa many"])
         (self.root / ".ub/ratchet").unlink()
         (self.root / ".ub/ratchet").symlink_to("missing")
         (_, incomplete), _, _ = call(ratchet.gate, self.root)
@@ -239,14 +275,15 @@ class GateTests(RepositoryTest):
         result, output, _ = call(ratchet.update, self.root)
         text = (self.root / ".ub/ratchet").read_text()
         self.assertTrue(text.startswith("# "))
-        counts = ratchet.parse(text)
+        counts = ratchet.parse(text).counts
         self.assertEqual(counts, {key: int(key == "lint.noqa") for key, _, _ in ratchet.PATTERNS})
         self.assertEqual(list(counts), sorted(counts))
         self.assertEqual(output, f"Wrote {self.root / '.ub/ratchet'}: 1 escape hatches.\n")
 
     def test_parse_skips_comments_and_rejects_malformed_lines(self):
-        self.assertEqual(ratchet.parse("# note\n\n  lint.noqa  2\n"), {"lint.noqa": 2})
-        for line in ("lint.noqa", "lint.noqa -1", "lint.noqa 1 2", "lint.noqa x"):
+        self.assertEqual(ratchet.parse("# note\n\n  lint.noqa  2\nexclude gen/*\n"),
+                         ratchet.Baseline({"lint.noqa": 2}, ["gen/*"]))
+        for line in ("lint.noqa", "lint.noqa -1", "lint.noqa 1 2", "lint.noqa x", "exclude a b"):
             with self.subTest(line=line), self.assertRaisesRegex(ValueError, "line 2 is not 'key count'"):
                 ratchet.parse("# note\n" + line + "\n")
 
@@ -256,7 +293,7 @@ class GuardTests(RepositoryTest):
         super().setUp()
         self.write(".ub/check", "#!/bin/sh\nexec ub check\n")
         (self.root / ".ub/check").chmod(0o755)
-        self.write(".ub/ratchet", "lint.noqa 1\nskip.js 2\n")
+        self.write(".ub/ratchet", "exclude keep/*\nlint.noqa 1\nskip.js 2\n")
         self.commit()
         git(self.root, "checkout", "-qb", "work")
 
@@ -284,6 +321,8 @@ class GuardTests(RepositoryTest):
         cases = {
             "raise": (lambda: self.write(".ub/ratchet", "lint.noqa 2\nskip.js 2\nskip.pytest 1\n"), True,
                       [".ub/ratchet raised lint.noqa: 1 -> 2", ".ub/ratchet raised skip.pytest: 0 -> 1"]),
+            "exclude": (lambda: self.write(".ub/ratchet", "exclude keep/*\nexclude gen/*\nlint.noqa 1\nskip.js 2\n"),
+                        True, [".ub/ratchet added exclude gen/*"]),
             "delete": (lambda: (self.root / ".ub/ratchet").unlink(), True, [".ub/ratchet was deleted"]),
             "edit": (lambda: self.write(".ub/check", "#!/bin/sh\nexit 0\n"), True, [".ub/check changed"]),
             "mode": (lambda: (self.root / ".ub/check").chmod(0o644), True, [".ub/check changed"]),
@@ -366,8 +405,10 @@ class CommandTests(RepositoryTest):
         self.assertEqual(self.ub("--update", cwd=self.root / "sub")[0], 0)
         self.assertTrue((self.root / ".ub/ratchet").is_file())
         self.assertEqual(self.ub()[0], 0)
+        self.assertEqual(self.ub("--lower", cwd=self.root / "sub")[:2],
+                         (0, f"Lowered 0 escape hatches in {self.root / '.ub/ratchet'}.\n"))
         for args in (["--guard"], ["--base", "main"], ["--head", "HEAD"],
-                     ["--update", "--guard", "--base", "main"]):
+                     ["--update", "--guard", "--base", "main"], ["--update", "--lower"]):
             with self.subTest(args=args):
                 self.assertEqual(self.ub(*args)[0], 2)
         self.write("t.py", "x  # noqa\n")
@@ -390,4 +431,4 @@ class CommandTests(RepositoryTest):
             self.assertEqual(self.ub(cwd=Path(outside))[0], 0)
             code, _, error = self.ub("--update", cwd=Path(outside))
         self.assertEqual(code, 2)
-        self.assertIn("needs a Git repository", error)
+        self.assertIn("need a Git repository", error)

@@ -205,21 +205,30 @@ directive does not count. Each occurrence counts, including two on one line.
 Symlinks are not followed.
 
 `.ub/ratchet` sits at the Git worktree root and holds one `key count` line per
-kind. `ub check` runs the ratchet before coverage and fails when any count
-exceeds its line, listing every current `file:line` of that kind (the file
-stores counts, not locations); the other gates still run and report. Equal or
-lower counts pass. Without `.ub/ratchet` the counts are report-only, and outside
+kind, plus optional `exclude GLOB` lines for vendored or generated files that
+should not be counted (`fnmatch` rules on the repository-relative path; `*`
+crosses directories, so `exclude vendor/*` skips the whole tree). `ub check`
+runs the ratchet before coverage and fails when any count exceeds its line; the
+other gates still run and report. The file stores counts, not locations, so a
+failure lists the kind's matches in files with uncommitted changes, the likely
+new ones, and the number elsewhere; with none in changed files, as in CI, it
+lists every match. It ends with how to remove or accept them. Equal or lower
+counts pass. Without `.ub/ratchet` the counts are report-only, and outside
 a Git repository the ratchet is skipped. A malformed or symlinked `.ub/ratchet`,
 or a failed file listing, makes the check incomplete. `ub ratchet` runs the
 same comparison alone.
 
-The counts belong to a human. After removing escape hatches, or to accept a new
-one, run `ub ratchet --update` and commit the file. The managed agent
-instructions tell agents never to run it or edit `.ub/` unless asked.
+Raising a count or adding an exclude belongs to a human: run
+`ub ratchet --update`, which writes the current counts and keeps the excludes,
+and commit the file. `ub ratchet --lower` only lowers counts to the current
+ones and never raises one or adds an exclude, so agents may run it after
+removing escape hatches; otherwise each removal leaves room for a free new one.
+The managed agent instructions tell agents to lower the counts and never to run
+`--update` or edit `.ub/` unless asked.
 
 `ub ratchet --guard --base REF [--head REF]` fails when the commits since the
 merge base of the head (default `HEAD`) and `REF` change `.ub/check` (content
-or mode), delete `.ub/ratchet`, or raise any of its counts, and when the
+or mode), delete `.ub/ratchet`, raise any of its counts, or add an exclude, and when the
 worktree's `.ub/check` or `.ub/ratchet` differs from `HEAD`. Adding them to a
 repository that had none, and lowering counts, pass. Set `UB_ALLOW_UB_CHANGE=1`
 to accept a reviewed change. The guard exits 2 when it cannot find the merge
@@ -265,8 +274,9 @@ Known limits:
 - A directive inside a multi-line block comment, after its first line, is missed.
 - Outside Python, strings and comments are not parsed: a quoted directive or a
   commented-out skip in JS/TS or Java counts.
-- The Stop hook keeps the last 8,000 bytes of output, so a very long list of
-  matches can push the kind and counts out of the agent's view.
+- The Stop hook keeps the last 8,000 bytes of output. When no match of a grown
+  kind is in a changed file, the full list is printed and can push the kind and
+  counts out of the agent's view.
 - Deleting a failing test and passing extra arguments to `./.ub/check` are not
   detected.
 - Go, Rust, and Clojure patterns are not yet counted.
@@ -274,8 +284,8 @@ Known limits:
 | `ub ratchet` status | Meaning |
 | --- | --- |
 | 0 | No count above `.ub/ratchet`, or the guard found no loosening (or `UB_ALLOW_UB_CHANGE=1`). |
-| 1 | A count grew, or the guard found `.ub/check` changed, `.ub/ratchet` deleted, a count raised, or uncommitted `.ub/` changes. |
-| 2 | Usage error, a malformed or symlinked `.ub/ratchet`, a failed file listing, `--update` outside Git, or no merge base for the guard. |
+| 1 | A count grew, or the guard found `.ub/check` changed, `.ub/ratchet` deleted, a count raised, an exclude added, or uncommitted `.ub/` changes. |
+| 2 | Usage error, a malformed or symlinked `.ub/ratchet`, a failed file listing, `--update` or `--lower` outside Git, `--lower` without `.ub/ratchet`, or no merge base for the guard. |
 
 ## Combined gate
 
