@@ -336,6 +336,12 @@ class GuardTests(RepositoryTest):
         self.assertEqual((code, output), (2, ""))
         self.assertIn("no merge base of HEAD and origin/missing", error)
         self.assertIn("fetch-depth: 0", error)
+        git(self.root, "checkout", "-q", "--orphan", "unrelated")
+        self.write("unrelated.txt", "")
+        self.commit()
+        code, _, error = call(ratchet.guard, self.root, "main")
+        self.assertEqual(code, 2)
+        self.assertIn("no merge base of HEAD and main: Git command failed.\n", error)
 
     def test_symlinked_or_malformed_committed_ratchet_is_incomplete(self):
         def symlink():

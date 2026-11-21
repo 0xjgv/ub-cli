@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import ub_cli
 
@@ -385,17 +386,43 @@ class HookTests(RepositoryTests):
         self.assertIn("last diagnostic", failure["reason"])
 
     def test_timeout_terminates_tests_started_in_a_new_session(self):
+        from ub_cli.hooks import stop_decision
+
         check = self.initialize()
         code = ("from pathlib import Path; from ub_cli.vendor.mutator.runner import CommandRunner; "
                 "CommandRunner().run('echo $$ > child.pid; sleep 30', Path.cwd(), None)")
         self.executable(check, f"exec {shlex.quote(sys.executable)} -c {shlex.quote(code)}\n")
-        failure = self.stop(None, "--timeout", "1")
+        failure = stop_decision({"cwd": str(self.root)}, 1)
         self.assertIn("exceeded 1s", failure["reason"])
         pid = int((self.root / "child.pid").read_text())
         status = self.command(["ps", "-p", str(pid), "-o", "stat="])
         if status.returncode == 0 and not status.stdout.strip().startswith("Z"):
             os.killpg(pid, signal.SIGKILL)
             self.fail(f"Detached test process {pid} survived: {status.stdout}")
+
+
+class TerminateTests(RepositoryTests):
+    def test_a_failing_ps_is_an_error_not_a_partial_kill(self):
+        from ub_cli.hooks import stop_decision
+
+        check = self.initialize()
+        self.executable(check, "sleep 20\n")
+        self.executable(self.bin / "ps", "exit 1\n")
+        with patch.dict(os.environ, {"PATH": self.env["PATH"]}):
+            with self.assertRaises(subprocess.CalledProcessError):
+                stop_decision({"cwd": str(self.root)}, 1)
+
+
+class WriteFileTests(unittest.TestCase):
+    def test_creates_parents_and_rewrites_only_changed_content(self):
+        from ub_cli.project import write_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "a" / "b" / "file.txt"
+            write_file(path, "one\n", 0o755)
+            self.assertEqual((path.read_text(), path.stat().st_mode & 0o777), ("one\n", 0o755))
+            write_file(path, "two\n")
+            self.assertEqual((path.read_text(), path.stat().st_mode & 0o777), ("two\n", 0o755))
 
 
 class StopDecisionTests(RepositoryTests):
@@ -415,8 +442,6 @@ class StopDecisionTests(RepositoryTests):
         for payload in ([], {"cwd": ""}, {"cwd": 1}):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 stop_decision(payload, 5)
-        self.executable(check, "sleep 20\n")
-        self.assertIn("exceeded 1s", stop_decision({"cwd": str(self.root)}, 1)["reason"])
 
     def test_changed_sees_staged_untracked_and_hidden_edits(self):
         from ub_cli.hooks import ub_changed

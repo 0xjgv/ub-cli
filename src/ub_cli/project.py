@@ -45,7 +45,7 @@ def local_file(root: Path, name: str) -> Path:
     return path
 
 
-def managed_block(text: str, body: str, *, markdown: bool = True) -> str:
+def managed_block(text: str, body: str, *, markdown: bool) -> str:
     start, end = (("<!-- ub:begin -->", "<!-- ub:end -->") if markdown
                   else ("# ub:begin", "# ub:end"))
     block = f"{start}\n{body.rstrip()}\n{end}\n"

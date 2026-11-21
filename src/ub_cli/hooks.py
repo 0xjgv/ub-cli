@@ -146,14 +146,14 @@ def terminate_check(process) -> None:
     try:
         os.killpg(process.pid, signal.SIGSTOP)
         while True:
-            table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="],
-                                   capture_output=True, text=True, check=True)
+            # int() reads the byte strings directly.
+            table = subprocess.run(["ps", "-e", "-o", "pid=", "-o", "ppid="], capture_output=True, check=True)
             parents = {int(pid): int(parent) for pid, parent in
                        (line.split() for line in table.stdout.splitlines())}
             descendants = {process.pid}
             while True:
                 children = {pid for pid, parent in parents.items() if parent in descendants}
-                if children <= descendants:
+                if not children - descendants:
                     break
                 descendants.update(children)
             new = descendants - stopped
