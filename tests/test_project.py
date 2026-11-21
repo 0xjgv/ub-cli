@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -21,7 +23,8 @@ class RepositoryTests(unittest.TestCase):
         self.bin = Path(temporary.name) / "bin"
         self.bin.mkdir()
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
-                        PYTHONPATH=str(Path(ub_cli.__file__).resolve().parent.parent))
+                        # Not resolved: mutation workers link unmutated files to the original tree.
+                        PYTHONPATH=str(Path(ub_cli.__file__).absolute().parent.parent))
         self.executable(self.bin / "ub", f"exec {shlex.quote(sys.executable)} -c 'from ub_cli.cli import main; main()' \"$@\"\n")
         self.git("init", "-q")
 
@@ -413,6 +416,75 @@ class TerminateTests(RepositoryTests):
                 stop_decision({"cwd": str(self.root)}, 1)
 
 
+class InstallTests(RepositoryTests):
+    def run_hooks(self, *args):
+        from ub_cli.hooks import run
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = run([*args, *(["--root", str(self.root)] if args[:1] == ("install",) else [])])
+        return code, out.getvalue() + err.getvalue()
+
+    def test_usage_errors_and_a_non_executable_check(self):
+        for args in ((), ("run",)):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_hooks(*args)[0], 2)
+        check = self.initialize()
+        self.assertEqual(self.run_hooks("install", "--timeout", "0"),
+                         (1, "ub hooks: --timeout requires a positive integer\n"))
+        check.chmod(0o644)
+        self.assertEqual(self.run_hooks("install"), (1, "ub hooks: Run ub init at the repository root before installing hooks.\n"))
+        check.chmod(0o755)
+        self.assertEqual(self.run_hooks("install", "--timeout", "1")[0], 0)
+
+    def test_refuses_symlinked_hooks_and_stray_markers(self):
+        self.initialize()
+        hook = self.root / ".git/hooks/pre-push"
+        target = self.root / ".git/hooks/hook-target"
+        target.write_text("#!/bin/sh\n")
+        hook.symlink_to(target)
+        self.assertIn("Cannot wrap a symlink", self.run_hooks("install")[1])
+        hook.unlink()
+        self.executable(hook, "# ub:end\n")
+        self.assertIn("Edited UB hook block needs review", self.run_hooks("install")[1])
+
+    def test_env_shebang_hooks_are_wrapped(self):
+        self.initialize()
+        hook = self.root / ".git/hooks/pre-push"
+        self.executable(hook, "")
+        hook.write_text("#!/usr/bin/env bash\necho original\n")
+        self.assertEqual(self.run_hooks("install")[0], 0)
+        self.assertIn("# ub:begin", hook.read_text())
+
+    def test_agent_handler_timeout_and_malformed_groups(self):
+        self.initialize()
+        settings = self.root / ".claude/settings.json"
+        self.assertEqual(self.run_hooks("install", "--target", "claude", "--timeout", "7")[0], 0)
+        self.assertEqual(json.loads(settings.read_text())["hooks"]["Stop"][0]["hooks"][0]["timeout"], 17)
+        settings.write_text(json.dumps({"hooks": {"Stop": [{"hooks": "x"}]}}))
+        self.assertIn("Invalid Stop hook group", self.run_hooks("install", "--target", "claude")[1])
+
+
+class InitUnitTests(unittest.TestCase):
+    def test_managed_block_rejects_duplicate_or_reversed_markers(self):
+        from ub_cli.project import managed_block
+
+        begin, end = "<!-- ub:begin -->", "<!-- ub:end -->"
+        self.assertEqual(managed_block("a\n", "x", markdown=True), f"a\n\n{begin}\nx\n{end}\n")
+        self.assertEqual(managed_block("a", "x", markdown=True), f"a\n\n{begin}\nx\n{end}\n")
+        for text in (f"{begin}{begin}{end}", f"{begin}{end}{end}", f"{end}\n{begin}"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "Malformed UB markers"):
+                managed_block(text, "x", markdown=True)
+
+    def test_max_workers_must_be_positive(self):
+        from ub_cli.project import run
+
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(run(["--root", directory, "--max-workers", "0"]), 1)
+                self.assertEqual(run(["--root", directory, "--max-workers", "1"]), 0)
+
+
 class WriteFileTests(unittest.TestCase):
     def test_creates_parents_and_rewrites_only_changed_content(self):
         from ub_cli.project import write_file
@@ -423,6 +495,9 @@ class WriteFileTests(unittest.TestCase):
             self.assertEqual((path.read_text(), path.stat().st_mode & 0o777), ("one\n", 0o755))
             write_file(path, "two\n")
             self.assertEqual((path.read_text(), path.stat().st_mode & 0o777), ("two\n", 0o755))
+            path.chmod(0o644)
+            write_file(path, "two\n", 0o755)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o755)
 
 
 class StopDecisionTests(RepositoryTests):

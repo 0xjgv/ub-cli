@@ -332,7 +332,9 @@ the mutated copy.
 
 Run `make test` for the test suite and `make build-native` to produce the
 archive for the current machine under `dist/`. `make build` builds the Python
-wheel. `make gate` runs this checkout's `ub check` on `src/`. The CI workflow
+wheel. `make gate` runs this checkout's `ub check` on `src/`. Its coverage run
+also measures the child processes the hook and init tests start
+(`scripts/gate-coverage.toml`), so that code counts as covered. The CI workflow
 runs `make test` and the vendored-tree check below as the `test` job, and
 `make gate` as the `gate` job, on every pull request and every push to `main`.
 The gate leaves out `scripts/`, the release tooling. Its one script with real
