@@ -1,9 +1,11 @@
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
 from ub_cli.vendor.crapper.discover import iter_source_files as crap_files
 from ub_cli.vendor.dryer.discover import iter_source_files as dry_files
+from ub_cli.vendor.mutator.runner import CommandRunner
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "vendor.py"
 spec = importlib.util.spec_from_file_location("vendor", SCRIPT)
@@ -51,6 +53,14 @@ class LocationTests(unittest.TestCase):
                 files = discover([package])
                 self.assertIn(package / "check.py", files)
                 self.assertFalse([path for path in files if vendor.VENDOR in path.parents])
+
+
+class PatchTests(unittest.TestCase):
+    def test_test_output_that_is_not_utf8_does_not_crash_mutator(self):
+        # scripts/vendor-patches/mutator-runner-undecodable-output.patch
+        emit = "import sys; sys.stdout.buffer.write(bytes([111, 107, 255])); sys.exit(3)"
+        result = CommandRunner().run([sys.executable, "-c", emit], Path.cwd(), 30)
+        self.assertEqual((result.code, result.output), (3, "ok\ufffd"))
 
 
 if __name__ == "__main__":

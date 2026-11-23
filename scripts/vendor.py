@@ -7,7 +7,9 @@ Absolute imports of the engines become ub_cli.vendor imports, so the wheel never
 installs top-level packages that collide with unrelated PyPI projects of the same name.
 The directory is named `vendor` because the engines skip directories of that name,
 so `ub crap`, `ub dry`, `ub mutate`, and `ub check` never analyze the engines themselves.
-Never edit vendored code by hand; change the pin and rerun this script.
+After the rewrite, each scripts/vendor-patches/NAME-*.patch is applied with `git apply`,
+for fixes not yet upstream; delete a patch once the pin includes its fix.
+Never edit vendored code by hand; change the pin or add a patch and rerun this script.
 """
 
 import re
@@ -20,6 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "src" / "ub_cli" / "vendor"
 PINS = VENDOR / "VENDORED"
+PATCHES = ROOT / "scripts" / "vendor-patches"
 ENGINES = ("crapper", "dryer", "mutator")
 NAMES = "|".join(ENGINES)
 FROM_IMPORT = re.compile(rf"^(\s*)from ({NAMES})(\.[\w.]+)? import ", re.M)
@@ -65,6 +68,9 @@ def vendor(name: str, url: str, commit: str) -> None:
         shutil.copyfile(checkout / "LICENSE", target / "LICENSE")
     for path in sorted(target.rglob("*.py")):
         path.write_text(rewrite(path.read_text(), path))
+    for patch in sorted(PATCHES.glob(f"{name}-*.patch")):
+        subprocess.run(["git", "apply", str(patch)], cwd=ROOT, check=True)
+        print(f"{name}: applied {patch.name}")
     print(f"{name}: vendored {commit[:12]}")
 
 

@@ -97,6 +97,7 @@ class CommandRunner:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 text=True,
+                errors="replace",
                 env=environment,
             )
         except OSError as exc:
