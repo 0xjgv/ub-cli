@@ -1,0 +1,12 @@
+diff --git a/src/ub_cli/vendor/mutator/runner.py b/src/ub_cli/vendor/mutator/runner.py
+index e554c76..fb73927 100644
+--- a/src/ub_cli/vendor/mutator/runner.py
++++ b/src/ub_cli/vendor/mutator/runner.py
+@@ -97,6 +97,7 @@ class CommandRunner:
+                 stderr=subprocess.STDOUT,
+                 start_new_session=True,
+                 text=True,
++                errors="replace",
+                 env=environment,
+             )
+         except OSError as exc:

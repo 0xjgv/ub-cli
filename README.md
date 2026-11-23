@@ -346,6 +346,10 @@ re-vendor run by the vendored-tree check on every pull request.
 [Mutator](https://github.com/unclebob/mutator) are vendored under
 `src/ub_cli/vendor` at the commits in `src/ub_cli/vendor/VENDORED`, with their
 imports rewritten to `ub_cli.vendor`. Never edit that directory by hand.
+A fix not yet upstream goes in `scripts/vendor-patches/NAME-*.patch`, which
+`scripts/vendor.py` applies after vendoring; delete the patch once the pin
+includes the fix. Current patch: `mutator` decodes test output with
+`errors="replace"`, so output that is not valid UTF-8 no longer crashes a run.
 `make check-upstreams` compares the pins with upstream and prints the update
 command, `python scripts/vendor.py NAME COMMIT`. The CI and Release workflows
 fail when the directory differs from what `scripts/vendor.py` produces.
